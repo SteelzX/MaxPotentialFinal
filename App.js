@@ -87,14 +87,16 @@ const sanitizePackets = (list) =>
 
 const sanitizeHistory = (list) => {
  if (!Array.isArray(list) || !list.length) return defaultHistory();
- return list.map((entry) => ({
-   ...entry,
-   id: entry?.id || entry?.dateKey || getTodayKey(),
-   workoutSessions: Array.isArray(entry?.workoutSessions) ? entry.workoutSessions : [],
-   electrolytes: entry?.electrolytes
-     ? { ...makeDefaultElectrolytes(), ...entry.electrolytes }
-     : makeDefaultElectrolytes(),
- }));
+ return list
+   .filter((entry) => !!entry?.dateKey)
+   .map((entry) => ({
+     ...entry,
+     id: entry?.dateKey,
+     workoutSessions: Array.isArray(entry?.workoutSessions) ? entry.workoutSessions : [],
+     electrolytes: entry?.electrolytes
+       ? { ...makeDefaultElectrolytes(), ...entry.electrolytes }
+       : makeDefaultElectrolytes(),
+   }));
 };
 
 

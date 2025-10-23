@@ -5,11 +5,20 @@ from datetime import date
 from typing import Dict, List
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from .analytics import analyze_day, summarize_training_loads
 from .schemas import DailyAnalysis, DailyInputs, UserProfile
 
 app = FastAPI(title="MaxPot Analytics", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # In-memory placeholder storage so the endpoints can be exercised locally.
 USER_PROFILES: Dict[str, UserProfile] = {}
