@@ -18,8 +18,11 @@ import {
  LayoutAnimation,
  UIManager,
  ActivityIndicator,
+ Alert,
+ Switch,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Notifications from 'expo-notifications';
 import {
  onAuthChanged,
  signInWithEmail,
@@ -68,7 +71,43 @@ const defaultElectrolytePackets = [];
 
 const defaultHistory = () => [];
 
+const defaultReminders = {
+ water: { enabled: false, time: '09:00' },
+ electrolytes: { enabled: false, time: '13:00' },
+ sleep: { enabled: false, time: '22:00' },
+ workouts: { enabled: false, time: '17:00' },
+};
+
+const REMINDER_MESSAGES = {
+ water: 'Time to hydrate — log a bottle in MaxPot.',
+ electrolytes: 'Stay balanced — add electrolytes if you’ve trained or sweated today.',
+ sleep: 'Wind-down reminder — aim for consistent sleep tonight.',
+ workouts: 'Training check-in — schedule or log your workout for today.',
+};
+
 const ANALYTICS_API_URL = process.env.EXPO_PUBLIC_ANALYTICS_URL || null;
+
+Notifications.setNotificationHandler?.({
+ handleNotification: async () => ({
+   shouldShowAlert: true,
+   shouldPlaySound: false,
+   shouldSetBadge: false,
+ }),
+});
+
+const sanitizeReminders = (data) => {
+ const base = { ...defaultReminders };
+ if (!data) return base;
+ Object.keys(base).forEach((key) => {
+   const item = data[key];
+   if (!item) return;
+   base[key] = {
+     enabled: !!item.enabled,
+     time: typeof item.time === 'string' ? item.time : base[key].time,
+   };
+ });
+ return base;
+};
 const sanitizeGoals = (data) => ({ ...defaultGoals, ...(data || {}) });
 
 const sanitizeToday = (data) => {
@@ -132,14 +171,26 @@ export default function App() {
  const [analysis, setAnalysis] = useState(null);
  const [analysisLoading, setAnalysisLoading] = useState(false);
  const [analysisError, setAnalysisError] = useState('');
- const saveTimerRef = useRef(null);
- useEffect(() => {
-   const timer = setInterval(() => {
-     const key = getTodayKey();
-     setToday((prev) => (prev.dateKey === key ? prev : makeDefaultToday(key)));
-   }, 60 * 1000);
-   return () => clearInterval(timer);
- }, []);
+ const [reminders, setReminders] = useState(() => ({ ...defaultReminders }));
+ const [notificationStatus, setNotificationStatus] = useState(null);
+const saveTimerRef = useRef(null);
+useEffect(() => {
+  const timer = setInterval(() => {
+    const key = getTodayKey();
+    setToday((prev) => (prev.dateKey === key ? prev : makeDefaultToday(key)));
+  }, 60 * 1000);
+  return () => clearInterval(timer);
+}, []);
+useEffect(() => {
+  (async () => {
+    try {
+      const settings = await Notifications.getPermissionsAsync();
+      setNotificationStatus(settings.status);
+    } catch (error) {
+      console.warn('Failed to read notification permissions', error);
+    }
+  })();
+}, []);
  useEffect(() => {
   if (!dataLoaded) return;
   const key = today.dateKey || getTodayKey();
@@ -189,6 +240,7 @@ export default function App() {
     setAnalysis(null);
     setAnalysisError('');
     setAnalysisLoading(false);
+    setReminders({ ...defaultReminders });
     setGoals(() => ({ ...defaultGoals }));
     setToday(makeDefaultToday());
     setElectrolytePackets(() => [...defaultElectrolytePackets]);
@@ -218,11 +270,13 @@ export default function App() {
                 : computeDayTrainingLoad(entry.workoutSessions || []),
           }));
           setHistory(sanitizedHistory);
+          setReminders(sanitizeReminders(data.reminders));
         } else {
           setGoals(() => ({ ...defaultGoals }));
           setToday(makeDefaultToday());
           setElectrolytePackets(() => [...defaultElectrolytePackets]);
           setHistory(defaultHistory());
+          setReminders({ ...defaultReminders });
         }
       } catch (error) {
         if (!active) return;
@@ -251,6 +305,7 @@ export default function App() {
       today,
       history,
       electrolytePackets,
+      reminders,
       updatedAt: Date.now(),
     };
     saveTimerRef.current = setTimeout(() => {
@@ -282,6 +337,10 @@ export default function App() {
    triggerDailyAnalysis();
  }, [firebaseUser, dataLoaded, triggerDailyAnalysis]);
 
+ useEffect(() => {
+   scheduleReminders(reminders);
+ }, [scheduleReminders, reminders]);
+
   const handleAuthSubmit = useCallback(async () => {
     const trimmedEmail = email.trim();
     const trimmedPassword = password.trim();
@@ -303,6 +362,7 @@ export default function App() {
           today: makeDefaultToday(),
           history: defaultHistory(),
           electrolytePackets: [...defaultElectrolytePackets],
+          reminders: { ...defaultReminders },
           createdAt: Date.now(),
         });
       } else {
@@ -321,14 +381,110 @@ export default function App() {
     setAuthError('');
   }, []);
 
-const handleSignOut = useCallback(async () => {
-  try {
-    await signOutUser();
-  } catch (error) {
-    console.error('Sign out failed', error);
-    setAuthError(error.message ?? 'Failed to sign out.');
+ const ensureNotificationPermission = useCallback(async () => {
+   try {
+     const current = await Notifications.getPermissionsAsync();
+     if (current.status === 'granted') {
+       setNotificationStatus(current.status);
+       return true;
+     }
+     const request = await Notifications.requestPermissionsAsync();
+     setNotificationStatus(request.status);
+     return request.status === 'granted';
+   } catch (error) {
+     console.error('Notification permission check failed', error);
+     return false;
+   }
+ }, []);
+
+ const handleReminderToggle = useCallback(
+   async (key, enabled) => {
+     if (enabled) {
+       const allowed = await ensureNotificationPermission();
+       if (!allowed) {
+         Alert.alert(
+           'Notifications blocked',
+           'Enable notifications in system settings to receive reminders.'
+         );
+         return;
+       }
+     }
+     setReminders((prev) => ({
+       ...prev,
+       [key]: { ...prev[key], enabled },
+     }));
+   },
+   [ensureNotificationPermission]
+ );
+
+ const handleReminderTimeChange = useCallback((key, value) => {
+   const sanitized = value.replace(/[^0-9:]/g, '').slice(0, 5);
+   setReminders((prev) => ({
+     ...prev,
+     [key]: { ...prev[key], time: sanitized },
+   }));
+ }, []);
+
+ const handleReminderTimeBlur = useCallback((key, value) => {
+   const normalized = normalizeTimeString(value);
+  if (!normalized) {
+    Alert.alert('Invalid time', 'Enter time using 24-hour format, e.g. 07:30 or 18:45.');
+    setReminders((prev) => ({
+      ...prev,
+      [key]: { ...prev[key], time: defaultReminders[key].time },
+    }));
+    return;
   }
-}, []);
+   setReminders((prev) => ({
+     ...prev,
+     [key]: { ...prev[key], time: normalized },
+   }));
+ }, []);
+
+ const scheduleReminders = useCallback(
+   async (prefs) => {
+     if (!firebaseUser || !dataLoaded) return;
+     const granted =
+       notificationStatus === 'granted' || (await ensureNotificationPermission());
+     if (!granted) return;
+     try {
+       await Notifications.cancelAllScheduledNotificationsAsync();
+       const entries = Object.entries(prefs);
+       await Promise.all(
+         entries.map(async ([key, cfg]) => {
+           if (!cfg?.enabled) return;
+           const parsed = parseTimeString(cfg.time);
+           if (!parsed) return;
+           const content = {
+             title: 'MaxPot Reminder',
+             body: REMINDER_MESSAGES[key] || 'Check in with MaxPot today.',
+             data: { category: key },
+           };
+           await Notifications.scheduleNotificationAsync({
+             content,
+             trigger: {
+               hour: parsed.hour,
+               minute: parsed.minute,
+               repeats: true,
+             },
+           });
+         })
+       );
+     } catch (error) {
+       console.error('Scheduling reminders failed', error);
+     }
+   },
+   [firebaseUser, dataLoaded, ensureNotificationPermission, notificationStatus]
+ );
+
+ const handleSignOut = useCallback(async () => {
+   try {
+     await signOutUser();
+   } catch (error) {
+     console.error('Sign out failed', error);
+     setAuthError(error.message ?? 'Failed to sign out.');
+   }
+ }, []);
 
  const buildDailyAnalysisPayload = useCallback(() => {
    if (!firebaseUser) return null;
@@ -600,11 +756,11 @@ const computeSleepStats = (historyList, todaySleep, goal) => {
   return { stdMinutes, debt };
 };
   // Parse decimals or fractions like "3/4"
- const parseFractionOrNumber = (s) => {
-   if (s == null) return NaN;
-   const t = String(s).trim();
-   if (!t) return NaN;
-   if (t.includes('/')) {
+const parseFractionOrNumber = (s) => {
+  if (s == null) return NaN;
+  const t = String(s).trim();
+  if (!t) return NaN;
+  if (t.includes('/')) {
      const [a, b] = t.split('/').map((x) => Number(String(x).trim()));
      if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return NaN;
      return a / b;
@@ -1028,13 +1184,51 @@ const Analyze = () => {
    });
 
 
-   const saveGoals = () => {
-     setGoals(localGoals);
-     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-   };
+ const saveGoals = () => {
+   setGoals(localGoals);
+   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+ };
+
+  const reminderLabels = {
+    water: 'Water intake',
+    electrolytes: 'Electrolytes',
+    sleep: 'Sleep wind-down',
+    workouts: 'Workouts',
+  };
+
+  const ReminderRow = ({ reminderKey }) => {
+    const config = reminders[reminderKey] || defaultReminders[reminderKey];
+    return (
+      <View style={styles.reminderRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.reminderLabel}>{reminderLabels[reminderKey]}</Text>
+          <Text style={styles.reminderSubLabel}>Daily notification</Text>
+        </View>
+        <View style={styles.reminderTimeBox}>
+          <TextInput
+            value={config.time}
+            onChangeText={(text) => handleReminderTimeChange(reminderKey, text)}
+            onBlur={() => handleReminderTimeBlur(reminderKey, config.time)}
+            keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+            placeholder="HH:MM"
+            placeholderTextColor="#6b7280"
+            style={styles.reminderTimeInput}
+            maxLength={5}
+          />
+        </View>
+        <Switch
+          trackColor={{ false: '#374151', true: BLUE }}
+          thumbColor="#f9fafb"
+          ios_backgroundColor="#1f2937"
+          value={!!config.enabled}
+          onValueChange={(value) => handleReminderToggle(reminderKey, value)}
+        />
+      </View>
+    );
+  };
 
 
-   const addPacket = () => {
+  const addPacket = () => {
      const clean = {};
      let any = false;
      Object.keys(pkt).forEach((k) => {
@@ -1115,6 +1309,16 @@ const Analyze = () => {
          <Text style={styles.saveBtnText}>Save settings</Text>
        </Pressable>
 
+       <View style={{ height: 1, backgroundColor: BORDER, marginVertical: 16, opacity: 0.5 }} />
+
+       <View style={styles.card}>
+         <Text style={styles.cardTitle}>Daily reminders</Text>
+         <Text style={styles.reminderNote}>Set 24-hour times for your nudges.</Text>
+         {Object.keys(reminderLabels).map((key) => (
+           <ReminderRow key={key} reminderKey={key} />
+         ))}
+       </View>
+
 
        {/* Divider */}
        <View style={{ height: 1, backgroundColor: BORDER, marginVertical: 16, opacity: 0.5 }} />
@@ -1192,6 +1396,25 @@ const updateSet = (i, effort) => {
    copy[i] = { ...copy[i], effort };
    return copy;
  });
+};
+
+const parseTimeString = (time) => {
+ if (typeof time !== 'string') return null;
+ const trimmed = time.trim();
+ const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+ if (!match) return null;
+ const hour = Number(match[1]);
+ const minute = Number(match[2]);
+ if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+ if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+ return { hour, minute };
+};
+
+const normalizeTimeString = (time) => {
+ const parsed = parseTimeString(time);
+ if (!parsed) return null;
+ const pad = (n) => String(n).padStart(2, '0');
+ return `${pad(parsed.hour)}:${pad(parsed.minute)}`;
 };
 
 
@@ -1971,6 +2194,13 @@ const styles = StyleSheet.create({
  cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
  cardTitle: { color: WHITE, fontSize: 16, fontWeight: '700' },
  cardValue: { color: TEXT_MUTED, fontSize: 14 },
+
+ reminderNote: { color: TEXT_MUTED, fontSize: 12, marginBottom: 12 },
+ reminderRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
+ reminderLabel: { color: WHITE, fontWeight: '700' },
+ reminderSubLabel: { color: TEXT_MUTED, fontSize: 11 },
+ reminderTimeBox: { width: 72, backgroundColor: '#0b0f1a', borderRadius: 10, borderWidth: 1, borderColor: BORDER, paddingVertical: 6, paddingHorizontal: 10 },
+ reminderTimeInput: { color: WHITE, fontSize: 16, textAlign: 'center' },
 
 
  progressTrack: { height: 10, backgroundColor: '#111827', borderRadius: 999, overflow: 'hidden' },
