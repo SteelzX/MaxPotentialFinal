@@ -53,7 +53,10 @@ const makeDefaultElectrolytes = () => ({
  bicarbonate: 0,
 });
 
-const makeDefaultToday = () => ({
+const getTodayKey = () => new Date().toISOString().slice(0, 10);
+
+const makeDefaultToday = (dateKey = getTodayKey()) => ({
+ dateKey,
  waterMl: 0,
  sleepHr: 0,
  workoutSessions: [],
@@ -63,12 +66,13 @@ const makeDefaultToday = () => ({
 
 const defaultElectrolytePackets = [];
 
-const defaultHistory = () => makeDemoHistory(120);
+const defaultHistory = () => [];
 
+const ANALYTICS_API_URL = process.env.EXPO_PUBLIC_ANALYTICS_URL || null;
 const sanitizeGoals = (data) => ({ ...defaultGoals, ...(data || {}) });
 
 const sanitizeToday = (data) => {
- const base = makeDefaultToday();
+ const base = makeDefaultToday(data?.dateKey || getTodayKey());
  if (!data) return base;
  return {
    ...base,
@@ -85,6 +89,7 @@ const sanitizeHistory = (list) => {
  if (!Array.isArray(list) || !list.length) return defaultHistory();
  return list.map((entry) => ({
    ...entry,
+   id: entry?.id || entry?.dateKey || getTodayKey(),
    workoutSessions: Array.isArray(entry?.workoutSessions) ? entry.workoutSessions : [],
    electrolytes: entry?.electrolytes
      ? { ...makeDefaultElectrolytes(), ...entry.electrolytes }
@@ -122,20 +127,41 @@ export default function App() {
  const [password, setPassword] = useState('');
  const [authBusy, setAuthBusy] = useState(false);
  const [authError, setAuthError] = useState('');
+ const [analysis, setAnalysis] = useState(null);
+ const [analysisLoading, setAnalysisLoading] = useState(false);
+ const [analysisError, setAnalysisError] = useState('');
  const saveTimerRef = useRef(null);
  useEffect(() => {
-   setHistory((h) => {
-     const copy = [...h];
-     copy[copy.length - 1] = {
-       ...copy[copy.length - 1],
-       waterMl: today.waterMl,
-       sleepHr: today.sleepHr,
-       workoutSessions: today.workoutSessions,
-       electrolyteLogged: today.electrolyteLogged,
-     };
-     return copy;
+   const timer = setInterval(() => {
+     const key = getTodayKey();
+     setToday((prev) => (prev.dateKey === key ? prev : makeDefaultToday(key)));
+   }, 60 * 1000);
+   return () => clearInterval(timer);
+ }, []);
+ useEffect(() => {
+  if (!dataLoaded) return;
+  const key = today.dateKey || getTodayKey();
+  const trainingLoadToday = computeDayTrainingLoad(today.workoutSessions);
+  setHistory((prev) => {
+    const entry = {
+      id: key,
+      dateKey: key,
+      waterMl: today.waterMl,
+      sleepHr: today.sleepHr,
+      workoutSessions: today.workoutSessions,
+      electrolytes: today.electrolytes,
+      electrolyteLogged: today.electrolyteLogged,
+      trainingLoad: trainingLoadToday,
+    };
+    const idx = prev.findIndex((d) => d.id === key);
+    if (idx >= 0) {
+      const next = [...prev];
+      next[idx] = { ...next[idx], ...entry };
+       return next;
+     }
+     return [...prev, entry];
    });
- }, [today]);
+ }, [today, dataLoaded]);
 
   useEffect(() => {
     const unsubscribe = onAuthChanged((user) => {
@@ -154,15 +180,18 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    if (!firebaseUser) {
-      setDataLoading(false);
-      setDataLoaded(false);
-      setAuthError('');
-      setGoals(() => ({ ...defaultGoals }));
-      setToday(makeDefaultToday());
-      setElectrolytePackets(() => [...defaultElectrolytePackets]);
-      setHistory(defaultHistory());
-      setRoute('home');
+  if (!firebaseUser) {
+    setDataLoading(false);
+    setDataLoaded(false);
+    setAuthError('');
+    setAnalysis(null);
+    setAnalysisError('');
+    setAnalysisLoading(false);
+    setGoals(() => ({ ...defaultGoals }));
+    setToday(makeDefaultToday());
+    setElectrolytePackets(() => [...defaultElectrolytePackets]);
+    setHistory(defaultHistory());
+    setRoute('home');
       return () => {
         active = false;
       };
@@ -176,9 +205,17 @@ export default function App() {
         if (!active) return;
         if (data) {
           setGoals(sanitizeGoals(data.goals));
-          setToday(sanitizeToday(data.today));
+          const nextToday = sanitizeToday(data.today);
+          setToday(nextToday);
           setElectrolytePackets(sanitizePackets(data.electrolytePackets));
-          setHistory(sanitizeHistory(data.history));
+          const sanitizedHistory = sanitizeHistory(data.history).map((entry) => ({
+            ...entry,
+            trainingLoad:
+              typeof entry.trainingLoad === 'number'
+                ? entry.trainingLoad
+                : computeDayTrainingLoad(entry.workoutSessions || []),
+          }));
+          setHistory(sanitizedHistory);
         } else {
           setGoals(() => ({ ...defaultGoals }));
           setToday(makeDefaultToday());
@@ -216,6 +253,11 @@ export default function App() {
     };
     saveTimerRef.current = setTimeout(() => {
       saveUserData(firebaseUser.uid, payload)
+        .then(() => {
+          if (ANALYTICS_API_URL) {
+            triggerDailyAnalysis();
+          }
+        })
         .catch((error) => {
           console.error('Failed to save user data', error);
           setAuthError(error.message ?? 'Failed to save user data');
@@ -225,13 +267,18 @@ export default function App() {
         });
     }, 800);
 
-    return () => {
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-    };
-  }, [firebaseUser, dataLoaded, goals, today, history, electrolytePackets]);
+  return () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+  };
+}, [firebaseUser, dataLoaded, goals, today, history, electrolytePackets, triggerDailyAnalysis]);
+
+ useEffect(() => {
+   if (!firebaseUser || !dataLoaded || !ANALYTICS_API_URL) return;
+   triggerDailyAnalysis();
+ }, [firebaseUser, dataLoaded, triggerDailyAnalysis]);
 
   const handleAuthSubmit = useCallback(async () => {
     const trimmedEmail = email.trim();
@@ -272,14 +319,68 @@ export default function App() {
     setAuthError('');
   }, []);
 
-  const handleSignOut = useCallback(async () => {
-    try {
-      await signOutUser();
-    } catch (error) {
-      console.error('Sign out failed', error);
-      setAuthError(error.message ?? 'Failed to sign out.');
-    }
-  }, []);
+const handleSignOut = useCallback(async () => {
+  try {
+    await signOutUser();
+  } catch (error) {
+    console.error('Sign out failed', error);
+    setAuthError(error.message ?? 'Failed to sign out.');
+  }
+}, []);
+
+ const buildDailyAnalysisPayload = useCallback(() => {
+   if (!firebaseUser) return null;
+   const dateKey = today.dateKey || getTodayKey();
+   const historyWithoutToday = history.filter((entry) => entry.id !== dateKey);
+   const recentLoads = historyWithoutToday
+     .sort((a, b) => (a.id || '').localeCompare(b.id || ''))
+     .slice(-28)
+     .map((entry) =>
+       typeof entry.trainingLoad === 'number'
+         ? entry.trainingLoad
+         : computeDayTrainingLoad(entry.workoutSessions || [])
+     );
+   const { stdMinutes, debt } = computeSleepStats(historyWithoutToday, today.sleepHr, goals.sleepHr || 8);
+   return {
+     user_id: firebaseUser.uid,
+     date: dateKey,
+     total_hydration_ml: today.waterMl,
+     total_sodium_mg: today.electrolytes?.sodium || 0,
+     total_potassium_mg: today.electrolytes?.potassium || 0,
+     total_magnesium_mg: today.electrolytes?.magnesium || 0,
+     total_calcium_mg: today.electrolytes?.calcium || 0,
+     total_sleep_hours: today.sleepHr,
+     sleep_consistency_minutes: Number.isFinite(stdMinutes) ? stdMinutes : null,
+     sleep_debt_hours: Number.isFinite(debt) ? debt : null,
+     workouts: (today.workoutSessions || []).map((session) => convertSessionForAnalysis(session)),
+     recent_training_loads: recentLoads,
+   };
+ }, [firebaseUser, today, history, goals]);
+
+ const triggerDailyAnalysis = useCallback(async () => {
+   if (!ANALYTICS_API_URL) return;
+   const payload = buildDailyAnalysisPayload();
+   if (!payload) return;
+   try {
+     setAnalysisLoading(true);
+     setAnalysisError('');
+     const response = await fetch(`${ANALYTICS_API_URL}/analyze/daily`, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify(payload),
+     });
+     if (!response.ok) {
+       throw new Error(`Analytics service returned ${response.status}`);
+     }
+     const json = await response.json();
+     setAnalysis(json);
+   } catch (error) {
+     console.error('Analytics sync failed', error);
+     setAnalysisError(error.message ?? 'Failed to load analytics.');
+   } finally {
+     setAnalysisLoading(false);
+   }
+ }, [buildDailyAnalysisPayload]);
 
 
  // Log modal
@@ -377,10 +478,125 @@ export default function App() {
    return Math.round(50 + score01 * 50);
  };
  const sleepConsistencyScore = (last7) => {
-   const sd = stdDev(last7);
-   const score01 = clamp01(1 - sd / 2);
-   return Math.round(20 + score01 * 80);
+  const sd = stdDev(last7);
+  const score01 = clamp01(1 - sd / 2);
+  return Math.round(20 + score01 * 80);
  };
+ const intensityPointsFromEffort = (effort, rir) => {
+   if (effort === 'past_failure') return 12;
+   if (effort === 'to_failure') return 10;
+   if (effort === 'before_failure') {
+     if (rir === 0) return 10;
+     if (rir === 1) return 9;
+     if (rir === 2) return 8;
+     if (rir === 3) return 7;
+     if (rir === 4) return 6;
+     return 5;
+   }
+   return 6;
+ };
+
+ const convertStrengthSetForAnalysis = (set) => {
+   const rir = typeof set.rir === 'number' ? set.rir : undefined;
+   return {
+     reps: typeof set.reps === 'number' ? set.reps : 8,
+     rir: rir != null ? rir : set.effort === 'before_failure' ? 2 : 0,
+     to_failure: set.effort === 'to_failure',
+     past_failure: set.effort === 'past_failure',
+   };
+ };
+
+ const convertSessionForAnalysis = (session) => {
+   if (session.type === 'strength') {
+     const sets = (session.strength?.sets || []).map(convertStrengthSetForAnalysis);
+     const intensities = sets.map((s) =>
+       intensityPointsFromEffort(
+         s.past_failure ? 'past_failure' : s.to_failure ? 'to_failure' : 'before_failure',
+         s.rir
+       )
+     );
+     const avgIntensity = intensities.length
+       ? intensities.reduce((acc, x) => acc + x, 0) / intensities.length
+       : 6;
+     const sessionRpe = Math.min(10, Math.max(4, Math.round(avgIntensity * 0.8)));
+     const durationMin = Math.max(30, sets.length * 5 + 20);
+     return {
+       type: 'strength',
+       duration_min: durationMin,
+       session_rpe: sessionRpe,
+       sets,
+     };
+   }
+   if (session.type === 'running_steady') {
+     const minutes = Math.max(0, Number(session.running_steady?.minutes) || 0);
+     const perceived = Math.min(10, Math.max(1, Number(session.running_steady?.perceived) || 5));
+     return {
+       type: 'conditioning',
+       duration_min: minutes,
+       session_rpe: perceived,
+       conditioning_detail: {
+         modality: 'running_steady',
+         distance_m: null,
+         pace: null,
+       },
+       sets: [],
+     };
+   }
+  if (session.type === 'running_sprint') {
+     const perceivedPct = Math.max(0, Math.min(100, Number(session.running_sprint?.perceivedPct) || 0));
+     const sessionRpe = Math.min(10, Math.max(5, Math.round((perceivedPct / 100) * 10)));
+     const distance = Math.max(0, Number(session.running_sprint?.distance_m) || 0);
+     const durationMin = Math.max(10, distance / 80 || 10);
+     return {
+       type: 'conditioning',
+       duration_min: durationMin,
+       session_rpe: sessionRpe,
+       conditioning_detail: {
+         modality: 'running_sprint',
+         distance_m: distance,
+         pace: null,
+       },
+       sets: [],
+     };
+   }
+   return {
+     type: session.type,
+     duration_min: Number(session.duration_min) || 0,
+     session_rpe: Number(session.session_rpe) || 0,
+     sets: [],
+   };
+ };
+
+ const computeSessionTrainingLoad = (session) => {
+   const normalized = convertSessionForAnalysis(session);
+   const srpe = (normalized.session_rpe || 0) * (normalized.duration_min || 0);
+   let strengthBonus = 0;
+   if (normalized.type === 'strength' && normalized.sets) {
+     normalized.sets.forEach((s) => {
+       const intensity = intensityPointsFromEffort(
+         s.past_failure ? 'past_failure' : s.to_failure ? 'to_failure' : 'before_failure',
+         s.rir
+       );
+       strengthBonus += (intensity * (s.reps || 0)) / 10;
+     });
+   }
+   return srpe + strengthBonus;
+ };
+
+ const computeDayTrainingLoad = (sessions) =>
+   Array.isArray(sessions) ? sessions.reduce((sum, s) => sum + computeSessionTrainingLoad(s), 0) : 0;
+
+const computeSleepStats = (historyList, todaySleep, goal) => {
+  const recent = [...historyList]
+    .sort((a, b) => (a.id || '').localeCompare(b.id || ''))
+    .slice(-6)
+    .map((d) => Number(d.sleepHr) || 0);
+  recent.push(Number(todaySleep) || 0);
+  const stdMinutes = stdDev(recent) * 60;
+  const totalHours = recent.reduce((acc, h) => acc + h, 0);
+  const debt = Math.max(0, goal * recent.length - totalHours);
+  return { stdMinutes, debt };
+};
   // Parse decimals or fractions like "3/4"
  const parseFractionOrNumber = (s) => {
    if (s == null) return NaN;
@@ -640,27 +856,34 @@ export default function App() {
  );
 
 
- const Analyze = () => {
-   const [view, setView] = useState('overview'); // 'overview' | 'sleep' | 'workouts' | 'water'
-   const [period, setPeriod] = useState('week'); // 'week' | 'month' | 'year'
+const Analyze = () => {
+  const [view, setView] = useState('overview'); // 'overview' | 'sleep' | 'workouts' | 'water'
+  const [period, setPeriod] = useState('week'); // 'week' | 'month' | 'year'
 
+  const readinessDisplay = Math.round(analysis?.readiness ?? readinessPct);
+  const sleepScoreDisplay = Math.round(analysis?.sleep_score ?? sleepPct);
+  const hydrationScoreDisplay = Math.round(analysis?.hydration_score ?? hydrationPct);
+  const electrolyteScoreDisplay = Math.round(analysis?.sodium_score ?? electrolytePct);
+  const insightsList = analysis?.insights || [];
+  const recommendationsList = analysis?.recommendations || [];
 
-   const series = useMemo(() => {
-     const days = period === 'week' ? 7 : period === 'month' ? 30 : 365;
-     return history.slice(-days);
-   }, [period, history]);
+  const series = useMemo(() => {
+    const days = period === 'week' ? 7 : period === 'month' ? 30 : 365;
+    return history.slice(-days);
+  }, [period, history]);
 
 
    const labels = useMemo(() => makeLabels(series, period), [series, period]);
-   const values = useMemo(() => {
-     if (view === 'sleep') return series.map((d) => d.sleepHr || 0);
-     if (view === 'workouts')
-       return series.map((d) =>
-         Array.isArray(d.workoutSessions) ? d.workoutSessions.length : d.workout || 0
-       );
-     if (view === 'water') return series.map((d) => d.waterMl || 0);
-     return [];
-   }, [series, view]);
+  const values = useMemo(() => {
+    if (view === 'sleep') return series.map((d) => d.sleepHr || 0);
+    if (view === 'workouts')
+      return series.map((d) => {
+        if (typeof d.trainingLoad === 'number') return d.trainingLoad;
+        return computeDayTrainingLoad(d.workoutSessions || []);
+      });
+    if (view === 'water') return series.map((d) => d.waterMl || 0);
+    return [];
+  }, [series, view]);
 
 
    const insight = useMemo(() => {
@@ -677,7 +900,8 @@ export default function App() {
    }, [values, view]);
 
 
-   const lineColor = view === 'sleep' ? SLEEP : view === 'workouts' ? WORKOUT : WATER;
+  const lineColor = view === 'sleep' ? SLEEP : view === 'workouts' ? WORKOUT : WATER;
+  const isSeriesEmpty = series.length === 0;
 
 
    return (
@@ -687,14 +911,46 @@ export default function App() {
            <Text style={styles.screenTitle}>Performance Overview</Text>
            <Bars
              data={[
-               { label: 'Sleep', value: sleepPct, color: SLEEP },
-               { label: 'Water', value: hydrationPct, color: WATER },
-               { label: 'Electrolytes', value: electrolytePct, color: ELECTROLYTE },
-               { label: 'Effective Hydration', value: effectiveHydrationPct, color: BLUE },
+               { label: 'Sleep', value: sleepScoreDisplay, color: SLEEP },
+               { label: 'Hydration', value: hydrationScoreDisplay, color: WATER },
+               { label: 'Electrolytes', value: electrolyteScoreDisplay, color: ELECTROLYTE },
+               { label: 'Effective Hydration', value: Math.round(effectiveHydrationPct), color: BLUE },
                { label: 'Workouts', value: workoutPct, color: WORKOUT },
              ]}
            />
-           <Donut percent={readinessPct} size={140} strokeWidth={14} />
+           <Donut percent={readinessDisplay} size={140} strokeWidth={14} />
+
+           {analysisLoading && (
+             <View style={{ marginTop: 12, alignItems: 'center' }}>
+               <ActivityIndicator color={BLUE} />
+               <Text style={styles.loadingText}>Updating insights...</Text>
+             </View>
+           )}
+           {analysisError ? <Text style={styles.analysisErrorText}>{analysisError}</Text> : null}
+
+           {insightsList.length > 0 && (
+             <View style={styles.analysisCard}>
+               <Text style={styles.analysisCardTitle}>Insights</Text>
+               {insightsList.map((item, idx) => (
+                 <View key={`ins-${idx}`} style={styles.analysisItem}>
+                   <Text style={styles.analysisItemCategory}>{item.category.toUpperCase()}</Text>
+                   <Text style={styles.analysisItemText}>{item.message}</Text>
+                 </View>
+               ))}
+             </View>
+           )}
+
+           {recommendationsList.length > 0 && (
+             <View style={styles.analysisCard}>
+               <Text style={styles.analysisCardTitle}>Suggested Actions</Text>
+               {recommendationsList.map((item, idx) => (
+                 <View key={`rec-${idx}`} style={styles.analysisItem}>
+                   <Text style={styles.analysisItemCategory}>{item.category.toUpperCase()}</Text>
+                   <Text style={styles.analysisItemText}>{item.message}</Text>
+                 </View>
+               ))}
+             </View>
+           )}
 
 
            <View style={styles.switchRow}>
@@ -717,23 +973,29 @@ export default function App() {
            </View>
 
 
-           <LineChartView
-             labels={labels}
-             values={values}
-             unit={view === 'sleep' ? 'h' : view === 'water' ? 'mL' : ''}
-             color={lineColor}
-           />
+           {isSeriesEmpty ? (
+             <Text style={styles.emptyStateText}>Log your first {view} entry to unlock trends.</Text>
+           ) : (
+             <>
+               <LineChartView
+                 labels={labels}
+                 values={values}
+                 unit={view === 'sleep' ? 'h' : view === 'water' ? 'mL' : ''}
+                 color={lineColor}
+               />
 
 
-           {insight && <Text style={styles.insight}>{insight}</Text>}
+               {insight && <Text style={styles.insight}>{insight}</Text>}
 
 
-           {view === 'water' && (
-             <Text style={styles.insight}>
-               {electrolytePct >= 70
-                 ? '✅ Hydration strong: Electrolytes are balanced.'
-                 : '⚠️ Hydration incomplete: Water logged, but electrolytes may be low — risk of cramping.'}
-             </Text>
+               {view === 'water' && (
+                 <Text style={styles.insight}>
+                   {electrolyteScoreDisplay >= 70
+                     ? '✅ Hydration strong: Electrolytes are balanced.'
+                     : '⚠️ Hydration incomplete: Water logged, but electrolytes may be low — risk of cramping.'}
+                 </Text>
+               )}
+             </>
            )}
 
 
@@ -1688,6 +1950,20 @@ const styles = StyleSheet.create({
  },
  quickText: { color: WHITE, fontWeight: '700' },
 
+ analysisCard: {
+   backgroundColor: '#0f172a',
+   borderWidth: 1,
+   borderColor: BORDER,
+   borderRadius: 14,
+   padding: 16,
+   marginTop: 12,
+ },
+ analysisCardTitle: { color: WHITE, fontSize: 16, fontWeight: '700', marginBottom: 8 },
+ analysisItem: { marginBottom: 8 },
+ analysisItemCategory: { color: TEXT_MUTED, fontSize: 11, letterSpacing: 1.2 },
+ analysisItemText: { color: WHITE, fontSize: 14 },
+ analysisErrorText: { color: '#fca5a5', textAlign: 'center', marginTop: 12 },
+ emptyStateText: { color: TEXT_MUTED, textAlign: 'center', marginTop: 32 },
 
  card: { backgroundColor: CARD, borderWidth: 1, borderColor: BORDER, borderRadius: 14, padding: 14, marginBottom: 12 },
  cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
