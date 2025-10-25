@@ -173,24 +173,34 @@ export default function App() {
  const [analysisError, setAnalysisError] = useState('');
  const [reminders, setReminders] = useState(() => ({ ...defaultReminders }));
  const [notificationStatus, setNotificationStatus] = useState(null);
-const saveTimerRef = useRef(null);
-useEffect(() => {
-  const timer = setInterval(() => {
-    const key = getTodayKey();
-    setToday((prev) => (prev.dateKey === key ? prev : makeDefaultToday(key)));
-  }, 60 * 1000);
-  return () => clearInterval(timer);
-}, []);
-useEffect(() => {
-  (async () => {
-    try {
-      const settings = await Notifications.getPermissionsAsync();
-      setNotificationStatus(settings.status);
-    } catch (error) {
-      console.warn('Failed to read notification permissions', error);
-    }
-  })();
-}, []);
+ const saveTimerRef = useRef(null);
+ const ensureCurrentDay = useCallback(() => {
+   const key = getTodayKey();
+   setToday((prev) => {
+     if (prev?.dateKey === key) return prev;
+     return makeDefaultToday(key);
+   });
+ }, []);
+ useEffect(() => {
+   ensureCurrentDay();
+   const timer = setInterval(() => {
+     ensureCurrentDay();
+   }, 60 * 1000);
+   return () => clearInterval(timer);
+ }, [ensureCurrentDay]);
+ useEffect(() => {
+   if (dataLoaded) ensureCurrentDay();
+ }, [dataLoaded, ensureCurrentDay]);
+ useEffect(() => {
+   (async () => {
+     try {
+       const settings = await Notifications.getPermissionsAsync();
+       setNotificationStatus(settings.status);
+     } catch (error) {
+       console.warn('Failed to read notification permissions', error);
+     }
+   })();
+ }, []);
  useEffect(() => {
   if (!dataLoaded) return;
   const key = today.dateKey || getTodayKey();
@@ -755,6 +765,106 @@ const computeSleepStats = (historyList, todaySleep, goal) => {
   const debt = Math.max(0, goal * recent.length - totalHours);
   return { stdMinutes, debt };
 };
+
+const computeReadinessTimeline = (historyList, todayEntry, goals) => {
+ const map = new Map();
+ historyList.forEach((item) => {
+   if (!item?.dateKey) return;
+   map.set(item.dateKey, item);
+ });
+ if (todayEntry) {
+   const key = todayEntry.dateKey || getTodayKey();
+   map.set(key, { ...todayEntry, dateKey: key });
+ }
+ const sorted = Array.from(map.values()).sort((a, b) =>
+   (a.dateKey || '').localeCompare(b.dateKey || '')
+ );
+ if (!sorted.length) return [];
+ return sorted.map((day, idx) => {
+   const dateKey = day.dateKey || getTodayKey();
+   const waterMl = day.waterMl || 0;
+   const sleepHr = day.sleepHr || 0;
+   const electrolytes = day.electrolytes || makeDefaultElectrolytes();
+   const hydrationPctDay = hydrationScore(waterMl, goals.waterMl || 0);
+   const electrolytePctDay = electrolyteBalanceScore(electrolytes);
+   const effectiveHydrationDay = Math.round(hydrationPctDay * 0.7 + electrolytePctDay * 0.3);
+   const sleepQty = sleepQtyScore(sleepHr || 0);
+   const sleepWindow = sorted
+     .slice(Math.max(0, idx - 6), idx + 1)
+     .map((item) => item.sleepHr || 0);
+   const sleepConsistency = sleepConsistencyScore(sleepWindow);
+   const sleepPctDay = Math.round(0.7 * sleepQty + 0.3 * sleepConsistency);
+   const workoutWindow = sorted
+     .slice(Math.max(0, idx - 6), idx + 1)
+     .map((item) => (Array.isArray(item.workoutSessions) ? item.workoutSessions.length : 0));
+   const workoutPctDay = workoutLoadScore(workoutWindow);
+   const hasEntries =
+     waterMl > 0 ||
+     sleepHr > 0 ||
+     (Array.isArray(day.workoutSessions) && day.workoutSessions.length > 0) ||
+     day.electrolyteLogged;
+   const readinessValue = Math.round(avg([sleepPctDay, effectiveHydrationDay, workoutPctDay]));
+   return {
+     dateKey,
+     readiness: hasEntries ? readinessValue : null,
+     sleepPct: sleepPctDay,
+     hydrationPct: hydrationPctDay,
+     electrolytePct: electrolytePctDay,
+     workoutPct: workoutPctDay,
+   };
+ });
+};
+
+const MONTH_NAMES = [
+ 'January',
+ 'February',
+ 'March',
+ 'April',
+ 'May',
+ 'June',
+ 'July',
+ 'August',
+ 'September',
+ 'October',
+ 'November',
+ 'December',
+];
+
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const buildCalendarWeeks = (monthDate, readinessMap) => {
+ const base = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+ const start = new Date(base);
+ start.setDate(start.getDate() - start.getDay());
+ const weeks = [];
+ for (let week = 0; week < 6; week++) {
+   const days = [];
+   for (let day = 0; day < 7; day++) {
+     const cellDate = new Date(start);
+     cellDate.setDate(start.getDate() + week * 7 + day);
+     const key = cellDate.toISOString().slice(0, 10);
+     const entry = readinessMap.get(key);
+     days.push({
+       key,
+       dayNumber: cellDate.getDate(),
+       readiness: entry?.readiness ?? null,
+       isCurrentMonth: cellDate.getMonth() === monthDate.getMonth(),
+       isToday: key === getTodayKey(),
+     });
+   }
+   weeks.push(days);
+ }
+ const label = `${MONTH_NAMES[monthDate.getMonth()]} ${monthDate.getFullYear()}`;
+ return { weeks, label };
+};
+
+const getReadinessColor = (value) => {
+ if (value == null) return '#1f2937';
+ if (value >= 85) return '#22c55e';
+ if (value >= 70) return '#facc15';
+ if (value >= 55) return '#f97316';
+ return '#ef4444';
+};
   // Parse decimals or fractions like "3/4"
 const parseFractionOrNumber = (s) => {
   if (s == null) return NaN;
@@ -1277,9 +1387,9 @@ const Analyze = () => {
    );
 
 
-   return (
-     <ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: 40 }}>
-       <Text style={styles.screenTitle}>Settings</Text>
+  return (
+    <ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: 40 }}>
+      <Text style={styles.screenTitle}>Settings</Text>
 
 
        {/* Goals & bottle size */}
@@ -1378,12 +1488,127 @@ const Analyze = () => {
          </View>
        )}
 
-       <Pressable onPress={handleSignOut} style={styles.signOutBtn}>
-         <Text style={styles.signOutText}>Sign out</Text>
-       </Pressable>
-     </ScrollView>
-   );
+      <Pressable onPress={handleSignOut} style={styles.signOutBtn}>
+        <Text style={styles.signOutText}>Sign out</Text>
+      </Pressable>
+    </ScrollView>
+  );
+};
+
+const Legend = ({ color, label }) => (
+ <View style={styles.legendItem}>
+   <View style={[styles.legendSwatch, { backgroundColor: color }]} />
+   <Text style={styles.legendLabel}>{label}</Text>
+ </View>
+);
+
+const Calendar = ({ history, today, goals }) => {
+ const [visibleMonth, setVisibleMonth] = useState(() => {
+   const now = new Date();
+   return new Date(now.getFullYear(), now.getMonth(), 1);
+ });
+
+ const readinessTimeline = useMemo(
+   () => computeReadinessTimeline(history, today, goals),
+   [history, today, goals]
+ );
+
+ const readinessMap = useMemo(() => {
+   const map = new Map();
+   readinessTimeline.forEach((entry) => {
+     if (entry?.dateKey) map.set(entry.dateKey, entry);
+   });
+   return map;
+ }, [readinessTimeline]);
+
+ const { weeks, label } = useMemo(
+   () => buildCalendarWeeks(visibleMonth, readinessMap),
+   [visibleMonth, readinessMap]
+ );
+
+ const changeMonth = (delta) => {
+   setVisibleMonth((prev) => {
+     const next = new Date(prev);
+     next.setMonth(prev.getMonth() + delta, 1);
+     return next;
+   });
  };
+
+ return (
+   <ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: 40 }}>
+     <View style={styles.calendarHeader}>
+       <TouchableOpacity onPress={() => changeMonth(-1)} style={styles.calendarNavBtn}>
+         <Ionicons name="chevron-back" size={18} color={WHITE} />
+       </TouchableOpacity>
+       <Text style={styles.calendarHeaderText}>{label}</Text>
+       <TouchableOpacity onPress={() => changeMonth(1)} style={styles.calendarNavBtn}>
+         <Ionicons name="chevron-forward" size={18} color={WHITE} />
+       </TouchableOpacity>
+     </View>
+
+     <View style={styles.calendarLegend}>
+       <Legend color={getReadinessColor(90)} label="90+" />
+       <Legend color={getReadinessColor(75)} label="75–89" />
+       <Legend color={getReadinessColor(60)} label="60–74" />
+       <Legend color={getReadinessColor(45)} label="< 60" />
+     </View>
+
+     <View style={styles.calendarWeekLabels}>
+       {DAY_LABELS.map((day) => (
+         <Text key={day} style={styles.calendarWeekLabel}>
+           {day}
+         </Text>
+       ))}
+     </View>
+
+     {weeks.map((week, idx) => (
+       <View key={`wk-${idx}`} style={styles.calendarWeekRow}>
+         {week.map((day) => {
+           const backgroundColor =
+             day.readiness != null ? getReadinessColor(day.readiness) : null;
+           const textOnBadge =
+             day.readiness != null && day.readiness >= 75 ? '#0f172a' : WHITE;
+           return (
+             <View
+               key={day.key}
+               style={[
+                 styles.calendarCell,
+                 !day.isCurrentMonth && styles.calendarCellMuted,
+                 day.isToday && styles.calendarCellToday,
+               ]}
+             >
+               <Text
+                 style={[
+                   styles.calendarCellDate,
+                   !day.isCurrentMonth && styles.calendarCellDateMuted,
+                 ]}
+               >
+                 {day.dayNumber}
+               </Text>
+               <View
+                 style={[
+                   styles.calendarCellBadge,
+                   backgroundColor
+                     ? { backgroundColor }
+                     : styles.calendarCellBadgeEmpty,
+                 ]}
+               >
+                 <Text style={[styles.calendarCellBadgeText, { color: textOnBadge }]}>
+                   {day.readiness != null ? day.readiness : '-'}
+                 </Text>
+               </View>
+             </View>
+           );
+         })}
+       </View>
+     ))}
+
+     <Text style={styles.calendarFootnote}>
+       Readiness combines sleep, hydration, and workout consistency. Log daily to fill the calendar.
+     </Text>
+   </ScrollView>
+ );
+};
 
 
  /* -------------------- Render with transitions -------------------- */
@@ -1668,6 +1893,7 @@ function WorkoutForm() {
       <ScreenTransition routeKey={route}>
        {route === 'home' && <Home />}
        {route === 'analyze' && <Analyze />}
+       {route === 'calendar' && <Calendar history={history} today={today} goals={goals} />}
        {route === 'settings' && <Settings />}
      </ScreenTransition>
 
@@ -1675,6 +1901,7 @@ function WorkoutForm() {
      {/* Bottom nav with icons */}
      <View style={styles.tabRow}>
        <TabBtn label="Analyze" icon="analytics-outline" active={route === 'analyze'} onPress={() => setRoute('analyze')} />
+       <TabBtn label="Calendar" icon="calendar-outline" active={route === 'calendar'} onPress={() => setRoute('calendar')} />
        <TabBtn label="Home" icon="home-outline" active={route === 'home'} onPress={() => setRoute('home')} />
        <TabBtn label="Settings" icon="settings-outline" active={route === 'settings'} onPress={() => setRoute('settings')} />
      </View>
@@ -2201,6 +2428,66 @@ const styles = StyleSheet.create({
  reminderSubLabel: { color: TEXT_MUTED, fontSize: 11 },
  reminderTimeBox: { width: 72, backgroundColor: '#0b0f1a', borderRadius: 10, borderWidth: 1, borderColor: BORDER, paddingVertical: 6, paddingHorizontal: 10 },
  reminderTimeInput: { color: WHITE, fontSize: 16, textAlign: 'center' },
+ calendarHeader: {
+   flexDirection: 'row',
+   alignItems: 'center',
+   justifyContent: 'space-between',
+   marginBottom: 12,
+ },
+ calendarHeaderText: { color: WHITE, fontSize: 18, fontWeight: '800' },
+ calendarNavBtn: {
+   width: 34,
+   height: 34,
+   borderRadius: 17,
+   borderWidth: 1,
+   borderColor: BORDER,
+   alignItems: 'center',
+   justifyContent: 'center',
+ },
+ calendarLegend: {
+   flexDirection: 'row',
+   alignItems: 'center',
+   gap: 12,
+   marginBottom: 12,
+ },
+ legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+ legendSwatch: { width: 12, height: 12, borderRadius: 6 },
+ legendLabel: { color: TEXT_MUTED, fontSize: 12 },
+ calendarWeekLabels: {
+   flexDirection: 'row',
+   justifyContent: 'space-between',
+   marginBottom: 6,
+ },
+ calendarWeekLabel: { flex: 1, textAlign: 'center', color: TEXT_MUTED, fontSize: 12 },
+ calendarWeekRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
+ calendarCell: {
+   flex: 1,
+   backgroundColor: '#0b0f1a',
+   borderRadius: 12,
+   borderWidth: 1,
+   borderColor: '#111827',
+   paddingVertical: 10,
+   marginHorizontal: 4,
+   alignItems: 'center',
+   gap: 6,
+ },
+ calendarCellMuted: { opacity: 0.55 },
+ calendarCellToday: { borderColor: BLUE },
+ calendarCellDate: { color: WHITE, fontWeight: '700' },
+ calendarCellDateMuted: { color: TEXT_MUTED },
+ calendarCellBadge: {
+   minWidth: 36,
+   paddingVertical: 4,
+   paddingHorizontal: 6,
+   borderRadius: 8,
+   alignItems: 'center',
+   justifyContent: 'center',
+ },
+ calendarCellBadgeEmpty: {
+   backgroundColor: '#111827',
+ },
+ calendarCellBadgeText: { color: WHITE, fontSize: 12, fontWeight: '700' },
+ calendarFootnote: { color: TEXT_MUTED, fontSize: 12, textAlign: 'center', marginTop: 16 },
 
 
  progressTrack: { height: 10, backgroundColor: '#111827', borderRadius: 999, overflow: 'hidden' },
