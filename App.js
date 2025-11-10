@@ -22,6 +22,7 @@ import {
  Switch,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
 import {
  onAuthChanged,
@@ -77,6 +78,29 @@ const defaultReminders = {
  sleep: { enabled: false, time: '22:00' },
  workouts: { enabled: false, time: '17:00' },
 };
+
+const DEFAULT_THEME_COLORS = {
+  textPrimary: '#f8fafc',
+  textMuted: '#94a3b8',
+  divider: 'rgba(148,163,184,0.2)',
+  overlay: 'rgba(3,7,18,0.78)',
+  tabIcon: '#9ca3af',
+  tabIconActive: '#93c5fd',
+  reminderSwitchTrack: '#374151',
+  reminderSwitchIos: '#1f2937',
+  donutLabel: '#f8fafc',
+};
+
+const ThemeContext = React.createContext({
+  mode: 'dark',
+  colors: DEFAULT_THEME_COLORS,
+  styles: {},
+  setAppearance: () => {},
+});
+
+function useThemeContext() {
+  return React.useContext(ThemeContext);
+}
 
 const REMINDER_MESSAGES = {
  water: 'Time to hydrate — log a bottle in MaxPot.',
@@ -135,8 +159,11 @@ const sanitizeHistory = (list) => {
      electrolytes: entry?.electrolytes
        ? { ...makeDefaultElectrolytes(), ...entry.electrolytes }
        : makeDefaultElectrolytes(),
-   }));
+  }));
 };
+
+const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
+const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
 
 export default function App() {
@@ -172,7 +199,17 @@ export default function App() {
  const [analysisLoading, setAnalysisLoading] = useState(false);
  const [analysisError, setAnalysisError] = useState('');
  const [reminders, setReminders] = useState(() => ({ ...defaultReminders }));
+ const [appearance, setAppearance] = useState('dark');
  const [notificationStatus, setNotificationStatus] = useState(null);
+ const themeColors = useMemo(
+   () => (appearance === 'light' ? THEME_COLORS.light : THEME_COLORS.dark),
+   [appearance]
+ );
+ const styles = useMemo(() => styleVariants[appearance] || styleVariants.dark, [appearance]);
+ const themeValue = useMemo(
+   () => ({ mode: appearance, colors: themeColors, styles, setAppearance }),
+   [appearance, themeColors, styles]
+ );
  const saveTimerRef = useRef(null);
  const ensureCurrentDay = useCallback(() => {
    const key = getTodayKey();
@@ -255,6 +292,7 @@ export default function App() {
     setToday(makeDefaultToday());
     setElectrolytePackets(() => [...defaultElectrolytePackets]);
     setHistory(defaultHistory());
+    setAppearance('dark');
     setRoute('home');
       return () => {
         active = false;
@@ -281,12 +319,14 @@ export default function App() {
           }));
           setHistory(sanitizedHistory);
           setReminders(sanitizeReminders(data.reminders));
+          setAppearance(data?.preferences?.theme === 'light' ? 'light' : 'dark');
         } else {
           setGoals(() => ({ ...defaultGoals }));
           setToday(makeDefaultToday());
           setElectrolytePackets(() => [...defaultElectrolytePackets]);
           setHistory(defaultHistory());
           setReminders({ ...defaultReminders });
+          setAppearance('dark');
         }
       } catch (error) {
         if (!active) return;
@@ -316,6 +356,7 @@ export default function App() {
       history,
       electrolytePackets,
       reminders,
+      preferences: { theme: appearance },
       updatedAt: Date.now(),
     };
     saveTimerRef.current = setTimeout(() => {
@@ -340,7 +381,7 @@ export default function App() {
       saveTimerRef.current = null;
     }
   };
-}, [firebaseUser, dataLoaded, goals, today, history, electrolytePackets, triggerDailyAnalysis]);
+}, [firebaseUser, dataLoaded, goals, today, history, electrolytePackets, triggerDailyAnalysis, appearance]);
 
  useEffect(() => {
    if (!firebaseUser || !dataLoaded || !ANALYTICS_API_URL) return;
@@ -373,6 +414,7 @@ export default function App() {
           history: defaultHistory(),
           electrolytePackets: [...defaultElectrolytePackets],
           reminders: { ...defaultReminders },
+          preferences: { theme: 'dark' },
           createdAt: Date.now(),
         });
       } else {
@@ -1019,11 +1061,98 @@ const parseFractionOrNumber = (s) => {
  const electrolyteProgressPct = electrolytePct; // direct %
 
 
- // Collective readiness (uses Effective Hydration)
- const readinessPct = Math.round(avg([sleepPct, effectiveHydrationPct, workoutPct]));
+// Collective readiness (uses Effective Hydration)
+const readinessPct = Math.round(avg([sleepPct, effectiveHydrationPct, workoutPct]));
+
+const FancyBackground = React.memo(() => {
+  const { mode } = useThemeContext();
+  const shimmer = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(shimmer, {
+          toValue: 1,
+          duration: 9000,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(shimmer, {
+          toValue: 0,
+          duration: 9000,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [shimmer]);
+
+  const translateX = shimmer.interpolate({ inputRange: [0, 1], outputRange: [-50, 40] });
+  const translateY = shimmer.interpolate({ inputRange: [0, 1], outputRange: [22, -28] });
+  const scale = shimmer.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] });
+
+  const outerGradient =
+    mode === 'light'
+      ? ['rgba(191,219,254,0.65)', 'rgba(224,231,255,0.9)', 'rgba(255,255,255,0.95)']
+      : ['rgba(2,6,23,0.92)', 'rgba(3,7,18,0.9)', 'rgba(15,23,42,0.92)'];
+
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <Animated.View
+        style={[
+          StyleSheet.absoluteFill,
+          { transform: [{ translateX }, { translateY }, { scale }], opacity: 0.55 },
+        ]}
+      >
+        <LinearGradient
+          colors={
+            mode === 'light'
+              ? ['rgba(59,130,246,0.35)', 'rgba(14,165,233,0.2)', 'rgba(147,51,234,0.18)']
+              : ['rgba(59,130,246,0.42)', 'rgba(14,165,233,0.25)', 'rgba(147,51,234,0.22)']
+          }
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
+      <LinearGradient
+        colors={outerGradient}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+    </View>
+  );
+});
+
+const RevealView = ({ delay = 0, children, travel = 18 }) => {
+  const anim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animation = Animated.timing(anim, {
+      toValue: 1,
+      duration: 420,
+      delay,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [anim, delay]);
+
+  const translateY = anim.interpolate({ inputRange: [0, 1], outputRange: [travel, 0] });
+
+  return (
+    <Animated.View style={{ width: '100%', opacity: anim, transform: [{ translateY }] }}>
+      {children}
+    </Animated.View>
+  );
+};
 
 
- /* -------------------- Page Transition Wrapper -------------------- */
+/* -------------------- Page Transition Wrapper -------------------- */
  const ScreenTransition = ({ routeKey, children }) => {
    const anim = useRef(new Animated.Value(0)).current;
 
@@ -1055,72 +1184,93 @@ const parseFractionOrNumber = (s) => {
 
 
  const Home = () => (
-   <View style={styles.scroll}>
-     <View style={styles.hero}>
-       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-         <MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />
-         <Text style={styles.appName}>MaxPot</Text>
+   <AnimatedScrollView
+     style={styles.scroll}
+     contentContainerStyle={styles.scrollContent}
+     showsVerticalScrollIndicator={false}
+   >
+     <RevealView>
+       <LinearGradient
+         colors={['#2563eb', '#1d4ed8', '#0ea5e9']}
+         start={{ x: 0, y: 0 }}
+         end={{ x: 1, y: 1 }}
+         style={styles.hero}
+       >
+         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+           <MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />
+           <Text style={styles.appName}>MaxPot</Text>
+         </View>
+         <Text style={styles.heroText}>Hit your daily targets.</Text>
+       </LinearGradient>
+     </RevealView>
+
+     <RevealView delay={120}>
+       <View style={styles.quickRow}>
+         <QuickButton
+           color={WATER}
+           icon={<MaterialCommunityIcons name="cup-water" size={22} color="#fff" />}
+           label="Log water"
+           onPress={() => openModal('water')}
+         />
+         <QuickButton
+           color={SLEEP}
+           icon={<MaterialCommunityIcons name="sleep" size={22} color="#fff" />}
+           label="Log sleep"
+           onPress={() => openModal('sleep')}
+         />
+         <QuickButton
+           color={WORKOUT}
+           icon={<MaterialCommunityIcons name="dumbbell" size={22} color="#fff" />}
+           label="Log workout"
+           onPress={() => openModal('workout')}
+         />
        </View>
-       <Text style={styles.heroText}>Hit your daily targets.</Text>
-     </View>
+     </RevealView>
 
+     <RevealView delay={180}>
+       <View style={styles.quickRow}>
+         <QuickButton
+           color={ELECTROLYTE}
+           icon={<MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />}
+           label="Log electrolytes"
+           onPress={() => openModal('electrolyte')}
+         />
+       </View>
+     </RevealView>
 
-     {/* Quick actions */}
-     <View style={styles.quickRow}>
-       <QuickButton
+     <RevealView delay={260}>
+       <ProgressCard
+         label="Water"
+         valueText={`${today.waterMl} / ${goals.waterMl} mL`}
+         pct={waterProgressPct}
          color={WATER}
-         icon={<MaterialCommunityIcons name="cup-water" size={22} color="#fff" />}
-         label="Log water"
-         onPress={() => openModal('water')}
        />
-       <QuickButton
-         color={SLEEP}
-         icon={<MaterialCommunityIcons name="sleep" size={22} color="#fff" />}
-         label="Log sleep"
-         onPress={() => openModal('sleep')}
-       />
-       <QuickButton
-         color={WORKOUT}
-         icon={<MaterialCommunityIcons name="dumbbell" size={22} color="#fff" />}
-         label="Log workout"
-         onPress={() => openModal('workout')}
-       />
-     </View>
-     <View style={styles.quickRow}>
-       <QuickButton
+     </RevealView>
+     <RevealView delay={320}>
+       <ProgressCard
+         label="Electrolytes"
+         valueText={`${electrolytePct}% balance`}
+         pct={electrolyteProgressPct}
          color={ELECTROLYTE}
-         icon={<MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />}
-         label="Log electrolytes"
-         onPress={() => openModal('electrolyte')}
        />
-     </View>
-
-
-     <ProgressCard
-       label="Water"
-       valueText={`${today.waterMl} / ${goals.waterMl} mL`}
-       pct={waterProgressPct}
-       color={WATER}
-     />
-     <ProgressCard
-       label="Electrolytes"
-       valueText={`${electrolytePct}% balance`}
-       pct={electrolyteProgressPct}
-       color={ELECTROLYTE}
-     />
-     <ProgressCard
-       label="Sleep"
-       valueText={`${today.sleepHr} / ${goals.sleepHr} hr`}
-       pct={sleepProgressPct}
-       color={SLEEP}
-     />
-     <ProgressCard
-       label="Workouts"
-       valueText={`${today.workoutSessions.length} / ${goals.workout}`}
-       pct={workoutProgressPct}
-       color={WORKOUT}
-     />
-   </View>
+     </RevealView>
+     <RevealView delay={380}>
+       <ProgressCard
+         label="Sleep"
+         valueText={`${today.sleepHr} / ${goals.sleepHr} hr`}
+         pct={sleepProgressPct}
+         color={SLEEP}
+       />
+     </RevealView>
+     <RevealView delay={440}>
+       <ProgressCard
+         label="Workouts"
+         valueText={`${today.workoutSessions.length} / ${goals.workout}`}
+         pct={workoutProgressPct}
+         color={WORKOUT}
+       />
+     </RevealView>
+   </AnimatedScrollView>
  );
 
 
@@ -1173,106 +1323,140 @@ const Analyze = () => {
 
 
    return (
-     <View style={styles.scroll}>
+     <AnimatedScrollView
+       style={styles.scroll}
+       contentContainerStyle={styles.scrollContent}
+       showsVerticalScrollIndicator={false}
+     >
        {view === 'overview' ? (
          <>
-           <Text style={styles.screenTitle}>Performance Overview</Text>
-           <Bars
-             data={[
-               { label: 'Sleep', value: sleepScoreDisplay, color: SLEEP },
-               { label: 'Hydration', value: hydrationScoreDisplay, color: WATER },
-               { label: 'Electrolytes', value: electrolyteScoreDisplay, color: ELECTROLYTE },
-               { label: 'Effective Hydration', value: Math.round(effectiveHydrationPct), color: BLUE },
-               { label: 'Workouts', value: workoutPct, color: WORKOUT },
-             ]}
-           />
-           <Donut percent={readinessDisplay} size={140} strokeWidth={14} />
+           <RevealView>
+             <Text style={styles.screenTitle}>Performance Overview</Text>
+           </RevealView>
+           <RevealView delay={80}>
+             <Bars
+               data={[
+                 { label: 'Sleep', value: sleepScoreDisplay, color: SLEEP },
+                 { label: 'Hydration', value: hydrationScoreDisplay, color: WATER },
+                 { label: 'Electrolytes', value: electrolyteScoreDisplay, color: ELECTROLYTE },
+                 { label: 'Effective Hydration', value: Math.round(effectiveHydrationPct), color: BLUE },
+                 { label: 'Workouts', value: workoutPct, color: WORKOUT },
+               ]}
+             />
+           </RevealView>
+           <RevealView delay={150}>
+             <Donut percent={readinessDisplay} size={140} strokeWidth={14} />
+           </RevealView>
 
            {analysisLoading && (
-             <View style={{ marginTop: 12, alignItems: 'center' }}>
-               <ActivityIndicator color={BLUE} />
-               <Text style={styles.loadingText}>Updating insights...</Text>
-             </View>
+             <RevealView delay={220}>
+               <View style={{ marginTop: 12, alignItems: 'center' }}>
+                 <ActivityIndicator color={BLUE} />
+                 <Text style={styles.loadingText}>Updating insights...</Text>
+               </View>
+             </RevealView>
            )}
-           {analysisError ? <Text style={styles.analysisErrorText}>{analysisError}</Text> : null}
+           {analysisError ? (
+             <RevealView delay={220}>
+               <Text style={styles.analysisErrorText}>{analysisError}</Text>
+             </RevealView>
+           ) : null}
 
            {insightsList.length > 0 && (
-             <View style={styles.analysisCard}>
-               <Text style={styles.analysisCardTitle}>Insights</Text>
-               {insightsList.map((item, idx) => (
-                 <View key={`ins-${idx}`} style={styles.analysisItem}>
-                   <Text style={styles.analysisItemCategory}>{item.category.toUpperCase()}</Text>
-                   <Text style={styles.analysisItemText}>{item.message}</Text>
-                 </View>
-               ))}
-             </View>
+             <RevealView delay={260}>
+               <View style={styles.analysisCard}>
+                 <Text style={styles.analysisCardTitle}>Insights</Text>
+                 {insightsList.map((item, idx) => (
+                   <View key={`ins-${idx}`} style={styles.analysisItem}>
+                     <Text style={styles.analysisItemCategory}>{item.category.toUpperCase()}</Text>
+                     <Text style={styles.analysisItemText}>{item.message}</Text>
+                   </View>
+                 ))}
+               </View>
+             </RevealView>
            )}
 
            {recommendationsList.length > 0 && (
-             <View style={styles.analysisCard}>
-               <Text style={styles.analysisCardTitle}>Suggested Actions</Text>
-               {recommendationsList.map((item, idx) => (
-                 <View key={`rec-${idx}`} style={styles.analysisItem}>
-                   <Text style={styles.analysisItemCategory}>{item.category.toUpperCase()}</Text>
-                   <Text style={styles.analysisItemText}>{item.message}</Text>
-                 </View>
-               ))}
-             </View>
+             <RevealView delay={320}>
+               <View style={styles.analysisCard}>
+                 <Text style={styles.analysisCardTitle}>Suggested Actions</Text>
+                 {recommendationsList.map((item, idx) => (
+                   <View key={`rec-${idx}`} style={styles.analysisItem}>
+                     <Text style={styles.analysisItemCategory}>{item.category.toUpperCase()}</Text>
+                     <Text style={styles.analysisItemText}>{item.message}</Text>
+                   </View>
+                 ))}
+               </View>
+             </RevealView>
            )}
 
 
-           <View style={styles.switchRow}>
-             <SwitchPill text="Sleep" onPress={() => setView('sleep')} />
-             <SwitchPill text="Workouts" onPress={() => setView('workouts')} />
-             <SwitchPill text="Water" onPress={() => setView('water')} />
-           </View>
+           <RevealView delay={360}>
+             <View style={styles.switchRow}>
+               <SwitchPill text="Sleep" onPress={() => setView('sleep')} />
+               <SwitchPill text="Workouts" onPress={() => setView('workouts')} />
+               <SwitchPill text="Water" onPress={() => setView('water')} />
+             </View>
+           </RevealView>
          </>
        ) : (
          <>
-           <View style={styles.rowBetween}>
-             <Text style={styles.screenTitle}>
-               {view === 'sleep' ? 'Sleep' : view === 'workouts' ? 'Workouts' : 'Water'}
-             </Text>
-             <View style={styles.periodRow}>
-               <PeriodBtn text="Week" on={() => setPeriod('week')} active={period === 'week'} />
-               <PeriodBtn text="Month" on={() => setPeriod('month')} active={period === 'month'} />
-               <PeriodBtn text="Year" on={() => setPeriod('year')} active={period === 'year'} />
+           <RevealView>
+             <View style={styles.rowBetween}>
+               <Text style={styles.screenTitle}>
+                 {view === 'sleep' ? 'Sleep' : view === 'workouts' ? 'Workouts' : 'Water'}
+               </Text>
+               <View style={styles.periodRow}>
+                 <PeriodBtn text="Week" on={() => setPeriod('week')} active={period === 'week'} />
+                 <PeriodBtn text="Month" on={() => setPeriod('month')} active={period === 'month'} />
+                 <PeriodBtn text="Year" on={() => setPeriod('year')} active={period === 'year'} />
+               </View>
              </View>
-           </View>
+           </RevealView>
 
 
            {isSeriesEmpty ? (
-             <Text style={styles.emptyStateText}>Log your first {view} entry to unlock trends.</Text>
+             <RevealView delay={120}>
+               <Text style={styles.emptyStateText}>Log your first {view} entry to unlock trends.</Text>
+             </RevealView>
            ) : (
              <>
-               <LineChartView
-                 labels={labels}
-                 values={values}
-                 unit={view === 'sleep' ? 'h' : view === 'water' ? 'mL' : ''}
-                 color={lineColor}
-               />
+               <RevealView delay={120}>
+                 <LineChartView
+                   labels={labels}
+                   values={values}
+                   unit={view === 'sleep' ? 'h' : view === 'water' ? 'mL' : ''}
+                   color={lineColor}
+                 />
+               </RevealView>
 
-
-               {insight && <Text style={styles.insight}>{insight}</Text>}
-
+               {insight && (
+                 <RevealView delay={200}>
+                   <Text style={styles.insight}>{insight}</Text>
+                 </RevealView>
+               )}
 
                {view === 'water' && (
-                 <Text style={styles.insight}>
-                   {electrolyteScoreDisplay >= 70
-                     ? '✅ Hydration strong: Electrolytes are balanced.'
-                     : '⚠️ Hydration incomplete: Water logged, but electrolytes may be low — risk of cramping.'}
-                 </Text>
+                 <RevealView delay={240}>
+                   <Text style={styles.insight}>
+                     {electrolyteScoreDisplay >= 70
+                       ? '✅ Hydration strong: Electrolytes are balanced.'
+                       : '⚠️ Hydration incomplete: Water logged, but electrolytes may be low — risk of cramping.'}
+                   </Text>
+                 </RevealView>
                )}
              </>
            )}
 
 
-           <TouchableOpacity onPress={() => setView('overview')} style={styles.backBtn}>
-             <Text style={styles.backText}>Back to Overview</Text>
-           </TouchableOpacity>
+           <RevealView delay={320}>
+             <TouchableOpacity onPress={() => setView('overview')} style={styles.backBtn}>
+               <Text style={styles.backText}>Back to Overview</Text>
+             </TouchableOpacity>
+           </RevealView>
          </>
        )}
-     </View>
+     </AnimatedScrollView>
    );
  };
 
@@ -1327,9 +1511,9 @@ const Analyze = () => {
           />
         </View>
         <Switch
-          trackColor={{ false: '#374151', true: BLUE }}
+          trackColor={{ false: themeColors.reminderSwitchTrack, true: BLUE }}
           thumbColor="#f9fafb"
-          ios_backgroundColor="#1f2937"
+          ios_backgroundColor={themeColors.reminderSwitchIos}
           value={!!config.enabled}
           onValueChange={(value) => handleReminderToggle(reminderKey, value)}
         />
@@ -1372,7 +1556,7 @@ const Analyze = () => {
 
    const PktNumber = ({ k, label }) => (
      <View style={{ width: '48%', marginBottom: 10 }}>
-       <Text style={{ color: 'white', marginBottom: 6 }}>{label} (mg)</Text>
+       <Text style={{ color: themeColors.textPrimary, marginBottom: 6 }}>{label} (mg)</Text>
        <View style={styles.inputBox}>
          <TextInput
            value={String(pkt[k])}
@@ -1388,7 +1572,11 @@ const Analyze = () => {
 
 
   return (
-    <ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: 40 }}>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.scrollContent}
+      showsVerticalScrollIndicator={false}
+    >
       <Text style={styles.screenTitle}>Settings</Text>
 
 
@@ -1419,7 +1607,34 @@ const Analyze = () => {
          <Text style={styles.saveBtnText}>Save settings</Text>
        </Pressable>
 
-       <View style={{ height: 1, backgroundColor: BORDER, marginVertical: 16, opacity: 0.5 }} />
+       <View style={[styles.card, styles.themeCard]}>
+         <Text style={styles.cardTitle}>Appearance</Text>
+         <Text style={styles.reminderNote}>Switch between dark and light mode.</Text>
+         <View style={styles.themeOptionsRow}>
+           <Pressable
+             onPress={() => setAppearance('dark')}
+             style={[styles.themeOption, appearance === 'dark' && styles.themeOptionActive]}
+           >
+             <View style={styles.rowBetween}>
+               <Text style={styles.themeOptionLabel}>Dark</Text>
+               {appearance === 'dark' && <Ionicons name="checkmark-circle" size={18} color={BLUE} />}
+             </View>
+             <Text style={styles.themeOptionHint}>High contrast for low-light sessions.</Text>
+           </Pressable>
+           <Pressable
+             onPress={() => setAppearance('light')}
+             style={[styles.themeOption, appearance === 'light' && styles.themeOptionActive]}
+           >
+             <View style={styles.rowBetween}>
+               <Text style={styles.themeOptionLabel}>Light</Text>
+               {appearance === 'light' && <Ionicons name="checkmark-circle" size={18} color={BLUE} />}
+             </View>
+             <Text style={styles.themeOptionHint}>Bright palette for daytime tracking.</Text>
+           </Pressable>
+         </View>
+       </View>
+
+       <View style={{ height: 1, backgroundColor: themeColors.divider, marginVertical: 16, opacity: 0.6 }} />
 
        <View style={styles.card}>
          <Text style={styles.cardTitle}>Daily reminders</Text>
@@ -1431,7 +1646,7 @@ const Analyze = () => {
 
 
        {/* Divider */}
-       <View style={{ height: 1, backgroundColor: BORDER, marginVertical: 16, opacity: 0.5 }} />
+       <View style={{ height: 1, backgroundColor: themeColors.divider, marginVertical: 16, opacity: 0.6 }} />
 
 
        {/* Electrolyte packet profiles */}
@@ -1475,8 +1690,8 @@ const Analyze = () => {
            {electrolytePackets.map((p) => (
              <View key={p.id} style={styles.packetRow}>
                <View style={{ flex: 1 }}>
-                 <Text style={{ color: 'white', fontWeight: '700' }}>{p.name}</Text>
-                 <Text style={{ color: '#9ca3af', fontSize: 12 }}>
+                 <Text style={{ color: themeColors.textPrimary, fontWeight: '700' }}>{p.name}</Text>
+                 <Text style={{ color: themeColors.textMuted, fontSize: 12 }}>
                    Na {p.sodium || 0} • K {p.potassium || 0} • Cl {p.chloride || 0} • Mg {p.magnesium || 0} • Ca {p.calcium || 0} • PO₄ {p.phosphate || 0} • HCO₃ {p.bicarbonate || 0}
                  </Text>
                </View>
@@ -1495,14 +1710,18 @@ const Analyze = () => {
   );
 };
 
-const Legend = ({ color, label }) => (
- <View style={styles.legendItem}>
-   <View style={[styles.legendSwatch, { backgroundColor: color }]} />
-   <Text style={styles.legendLabel}>{label}</Text>
- </View>
-);
+const Legend = ({ color, label }) => {
+  const { styles } = useThemeContext();
+  return (
+    <View style={styles.legendItem}>
+      <View style={[styles.legendSwatch, { backgroundColor: color }]} />
+      <Text style={styles.legendLabel}>{label}</Text>
+    </View>
+  );
+};
 
 const Calendar = ({ history, today, goals }) => {
+ const { styles } = useThemeContext();
  const [visibleMonth, setVisibleMonth] = useState(() => {
    const now = new Date();
    return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1535,7 +1754,11 @@ const Calendar = ({ history, today, goals }) => {
  };
 
  return (
-   <ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: 40 }}>
+   <ScrollView
+     style={styles.scroll}
+     contentContainerStyle={[styles.scrollContent, { paddingBottom: 60 }]}
+     showsVerticalScrollIndicator={false}
+   >
      <View style={styles.calendarHeader}>
        <TouchableOpacity onPress={() => changeMonth(-1)} style={styles.calendarNavBtn}>
          <Ionicons name="chevron-back" size={18} color={WHITE} />
@@ -1656,6 +1879,7 @@ const isSelectedEffort = (i, key) => setsDetail[i]?.effort === key;
 
 
 function WorkoutForm() {
+ const { styles, colors } = useThemeContext();
  return (
    <ScrollView style={{ maxHeight: 420 }}>
      {!workoutType && (
@@ -1694,7 +1918,7 @@ function WorkoutForm() {
 
          {Array.from({ length: Math.max(0, numSets) }).map((_, i) => (
            <View key={i} style={{ marginTop: 10 }}>
-             <Text style={{ color: 'white', marginBottom: 6 }}>Set {i + 1}</Text>
+         <Text style={{ color: colors.textPrimary, marginBottom: 6 }}>Set {i + 1}</Text>
              <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
                <Pressable
                  onPress={() => updateSet(i, 'before_failure')}
@@ -1808,119 +2032,127 @@ function WorkoutForm() {
 
  if (isLoading) {
    return (
-     <SafeAreaView style={styles.loadingScreen}>
-       <StatusBar style="light" />
-       <ActivityIndicator size="large" color={BLUE} />
-       <Text style={styles.loadingText}>Syncing with Firebase...</Text>
-     </SafeAreaView>
-   );
- }
+     <ThemeContext.Provider value={themeValue}>
+       <SafeAreaView style={styles.loadingScreen}>
+         <StatusBar style={appearance === 'light' ? 'dark' : 'light'} />
+         <FancyBackground />
+         <ActivityIndicator size="large" color={BLUE} />
+         <Text style={styles.loadingText}>Syncing with Firebase...</Text>
+       </SafeAreaView>
+     </ThemeContext.Provider>
+    );
+  }
 
- if (!firebaseUser) {
-   return (
-     <SafeAreaView style={styles.authScreen}>
-       <StatusBar style="light" />
-       <View style={styles.authCard}>
-         <Text style={styles.authHeading}>MaxPot</Text>
-         <Text style={styles.authSubtitle}>
-           {authMode === 'signIn'
-             ? 'Log in to sync your training and hydration data.'
-             : 'Create an account to sync your training and hydration data.'}
-         </Text>
-         <View style={styles.authField}>
-           <Text style={styles.authLabel}>Email</Text>
-           <TextInput
-             value={email}
-             onChangeText={setEmail}
-             autoCapitalize="none"
-             keyboardType="email-address"
-             placeholder="you@example.com"
-             placeholderTextColor="#6b7280"
-             style={styles.authInput}
-           />
-         </View>
-         <View style={styles.authField}>
-           <Text style={styles.authLabel}>Password</Text>
-           <TextInput
-             value={password}
-             onChangeText={setPassword}
-             placeholder="Minimum 6 characters"
-             placeholderTextColor="#6b7280"
-             secureTextEntry
-             style={styles.authInput}
-           />
-         </View>
-         {authError ? <Text style={styles.authError}>{authError}</Text> : null}
-         <Pressable
-           onPress={handleAuthSubmit}
-           disabled={authBusy}
-           style={({ pressed }) => [
-             styles.authButton,
-             (pressed && !authBusy) ? { opacity: 0.9 } : null,
-             authBusy ? { opacity: 0.7 } : null,
-           ]}
-         >
-           {authBusy ? (
-             <ActivityIndicator color="#fff" />
-           ) : (
-             <Text style={styles.authButtonText}>
-               {authMode === 'signIn' ? 'Log in' : 'Sign up'}
-             </Text>
-           )}
-         </Pressable>
-         <TouchableOpacity onPress={toggleAuthMode} style={styles.authToggle}>
-           <Text style={styles.authToggleText}>
-             {authMode === 'signIn'
-               ? "Don't have an account? Sign up"
-               : 'Already registered? Log in'}
-           </Text>
-         </TouchableOpacity>
-       </View>
-     </SafeAreaView>
-   );
- }
+  if (!firebaseUser) {
+    return (
+      <ThemeContext.Provider value={themeValue}>
+        <SafeAreaView style={styles.authScreen}>
+          <StatusBar style={appearance === 'light' ? 'dark' : 'light'} />
+          <FancyBackground />
+          <View style={styles.authCard}>
+            <Text style={styles.authHeading}>MaxPot</Text>
+            <Text style={styles.authSubtitle}>
+            {authMode === 'signIn'
+              ? 'Log in to sync your training and hydration data.'
+              : 'Create an account to sync your training and hydration data.'}
+            </Text>
+            <View style={styles.authField}>
+              <Text style={styles.authLabel}>Email</Text>
+              <TextInput
+                value={email}
+                onChangeText={setEmail}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                placeholder="you@example.com"
+                placeholderTextColor="#6b7280"
+                style={styles.authInput}
+              />
+            </View>
+            <View style={styles.authField}>
+              <Text style={styles.authLabel}>Password</Text>
+              <TextInput
+                value={password}
+                onChangeText={setPassword}
+                placeholder="Minimum 6 characters"
+                placeholderTextColor="#6b7280"
+                secureTextEntry
+                style={styles.authInput}
+              />
+            </View>
+            {authError ? <Text style={styles.authError}>{authError}</Text> : null}
+            <Pressable
+              onPress={handleAuthSubmit}
+              disabled={authBusy}
+              style={({ pressed }) => [
+                styles.authButton,
+                (pressed && !authBusy) ? { opacity: 0.9 } : null,
+                authBusy ? { opacity: 0.7 } : null,
+              ]}
+            >
+              {authBusy ? (
+                <ActivityIndicator color={themeColors.textPrimary} />
+              ) : (
+                <Text style={styles.authButtonText}>
+                  {authMode === 'signIn' ? 'Log in' : 'Sign up'}
+                </Text>
+              )}
+            </Pressable>
+            <TouchableOpacity onPress={toggleAuthMode} style={styles.authToggle}>
+              <Text style={styles.authToggleText}>
+                {authMode === 'signIn'
+                  ? "Don't have an account? Sign up"
+                  : 'Already registered? Log in'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      </ThemeContext.Provider>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <StatusBar style="light" />
+    <ThemeContext.Provider value={themeValue}>
+      <SafeAreaView style={styles.screen}>
+        <StatusBar style={appearance === 'light' ? 'dark' : 'light'} />
+        <FancyBackground />
 
-      {authError ? (
-        <View style={styles.errorBanner}>
-          <Text style={styles.errorBannerText}>{authError}</Text>
+        <View style={styles.screenContent}>
+          {authError ? (
+            <View style={styles.errorBanner}>
+              <Text style={styles.errorBannerText}>{authError}</Text>
+            </View>
+          ) : null}
+
+          <ScreenTransition routeKey={route}>
+            {route === 'home' && <Home />}
+            {route === 'analyze' && <Analyze />}
+            {route === 'calendar' && <Calendar history={history} today={today} goals={goals} />}
+            {route === 'settings' && <Settings />}
+          </ScreenTransition>
         </View>
-      ) : null}
 
-      <ScreenTransition routeKey={route}>
-       {route === 'home' && <Home />}
-       {route === 'analyze' && <Analyze />}
-       {route === 'calendar' && <Calendar history={history} today={today} goals={goals} />}
-       {route === 'settings' && <Settings />}
-     </ScreenTransition>
+        {/* Bottom nav with icons */}
+        <View style={styles.tabRow}>
+          <TabBtn label="Analyze" icon="analytics-outline" active={route === 'analyze'} onPress={() => setRoute('analyze')} />
+          <TabBtn label="Calendar" icon="calendar-outline" active={route === 'calendar'} onPress={() => setRoute('calendar')} />
+          <TabBtn label="Home" icon="home-outline" active={route === 'home'} onPress={() => setRoute('home')} />
+          <TabBtn label="Settings" icon="settings-outline" active={route === 'settings'} onPress={() => setRoute('settings')} />
+        </View>
 
-
-     {/* Bottom nav with icons */}
-     <View style={styles.tabRow}>
-       <TabBtn label="Analyze" icon="analytics-outline" active={route === 'analyze'} onPress={() => setRoute('analyze')} />
-       <TabBtn label="Calendar" icon="calendar-outline" active={route === 'calendar'} onPress={() => setRoute('calendar')} />
-       <TabBtn label="Home" icon="home-outline" active={route === 'home'} onPress={() => setRoute('home')} />
-       <TabBtn label="Settings" icon="settings-outline" active={route === 'settings'} onPress={() => setRoute('settings')} />
-     </View>
-
-
-     {/* Modal */}
-     <Modal visible={!!modal.type} animationType="slide" transparent onRequestClose={closeModal}>
-       <View style={styles.modalBackdrop}>
-         <KeyboardAvoidingView
-           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-           style={styles.modalCard}
-         >
-           <Text style={styles.modalTitle}>
-             {modal.type === 'water' && (waterLogMode === 'ml' ? 'Add water (mL)' : 'Add water (Bottles)')}
-             {modal.type === 'sleep' && 'Add sleep (hr)'}
-             {modal.type === 'workout' && 'Log workout'}
-             {modal.type === 'electrolyte' &&
-               (electrolyteMode === 'single' ? 'Add electrolyte (single)' : 'Add electrolytes (batch)')}
-           </Text>
+        {/* Modal */}
+        <Modal visible={!!modal.type} animationType="slide" transparent onRequestClose={closeModal}>
+          <View style={styles.modalBackdrop}>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={styles.modalCard}
+            >
+            <Text style={styles.modalTitle}>
+              {modal.type === 'water' && (waterLogMode === 'ml' ? 'Add water (mL)' : 'Add water (Bottles)')}
+              {modal.type === 'sleep' && 'Add sleep (hr)'}
+              {modal.type === 'workout' && 'Log workout'}
+              {modal.type === 'electrolyte' &&
+                (electrolyteMode === 'single' ? 'Add electrolyte (single)' : 'Add electrolytes (batch)')}
+            </Text>
 
 
            {/* WATER: mode switch */}
@@ -1930,7 +2162,7 @@ function WorkoutForm() {
                  <SegBtn text="mL" active={waterLogMode === 'ml'} onPress={() => { setWaterLogMode('ml'); setInputValue(''); }} />
                  <SegBtn text="Bottles" active={waterLogMode === 'bottle'} onPress={() => { setWaterLogMode('bottle'); setInputValue(''); }} />
                </View>
-               <Text style={{ color: '#9ca3af', marginBottom: 6 }}>
+               <Text style={{ color: themeColors.textMuted, marginBottom: 6 }}>
                  Bottle size: {goals.waterBottleMl || 0} mL
                </Text>
              </>
@@ -1982,7 +2214,7 @@ function WorkoutForm() {
                <ScrollView style={{ maxHeight: 360 }}>
                  {Object.keys(batchElectrolytes).map((k) => (
                    <View key={k} style={{ marginBottom: 10 }}>
-                     <Text style={{ color: 'white', marginBottom: 6, textTransform: 'capitalize' }}>{k} (mg)</Text>
+                     <Text style={{ color: themeColors.textPrimary, marginBottom: 6, textTransform: 'capitalize' }}>{k} (mg)</Text>
                      <View style={styles.inputBox}>
                        <TextInput
                          value={String(batchElectrolytes[k])}
@@ -1998,7 +2230,7 @@ function WorkoutForm() {
                    </View>
                  ))}
                </ScrollView>
-               <Text style={{ color: '#9ca3af', marginTop: 4 }}>
+               <Text style={{ color: themeColors.textMuted, marginTop: 4 }}>
                  Tip: tap a packet above to auto-fill, then edit any amounts before saving.
                </Text>
              </>
@@ -2071,39 +2303,44 @@ function WorkoutForm() {
              </Pressable>
            </View>
          </KeyboardAvoidingView>
-       </View>
-     </Modal>
-   </SafeAreaView>
- );
+          </View>
+        </Modal>
+      </SafeAreaView>
+    </ThemeContext.Provider>
+  );
 }
 
 
 /* -------------------- Charts (no libs) -------------------- */
 
 
-const Bars = ({ data }) => (
- <View style={{ marginBottom: 16 }}>
-   {data.map((row) => (
-     <View key={row.label} style={{ marginBottom: 10 }}>
-       <View style={styles.barRow}>
-         <Text style={styles.barLabel}>{row.label}</Text>
-         <Text style={styles.barPct}>{row.value}%</Text>
-       </View>
-       <View style={styles.barTrack}>
-         <View
-           style={[
-             styles.barFill,
-             { width: `${Math.max(0, Math.min(100, row.value))}%`, backgroundColor: row.color },
-           ]}
-         />
-       </View>
-     </View>
-   ))}
- </View>
-);
+const Bars = ({ data }) => {
+  const { styles } = useThemeContext();
+  return (
+    <View style={{ marginBottom: 16 }}>
+      {data.map((row) => (
+        <View key={row.label} style={{ marginBottom: 10 }}>
+          <View style={styles.barRow}>
+            <Text style={styles.barLabel}>{row.label}</Text>
+            <Text style={styles.barPct}>{row.value}%</Text>
+          </View>
+          <View style={styles.barTrack}>
+            <View
+              style={[
+                styles.barFill,
+                { width: `${Math.max(0, Math.min(100, row.value))}%`, backgroundColor: row.color },
+              ]}
+            />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+};
 
 
 const LineChartView = ({ labels, values, unit, color = BLUE }) => {
+ const { styles } = useThemeContext();
  const width = Dimensions.get('window').width - 32;
  const height = 200;
  const pad = 16;
@@ -2169,14 +2406,50 @@ const LineChartView = ({ labels, values, unit, color = BLUE }) => {
 
 /* -------------------- Donut progress (no libs) -------------------- */
 const Donut = ({ percent = 0, size = 120, strokeWidth = 12 }) => {
- const p = Math.max(0, Math.min(100, percent));
+ const { colors } = useThemeContext();
+ const bounded = Math.max(0, Math.min(100, percent));
  const half = size / 2;
+ const progress = useRef(new Animated.Value(0)).current;
+ const listenerRef = useRef(null);
+ const [displayPct, setDisplayPct] = useState(0);
 
+ useEffect(() => {
+   progress.stopAnimation();
+   if (listenerRef.current) {
+     progress.removeListener(listenerRef.current);
+     listenerRef.current = null;
+   }
+   const id = progress.addListener(({ value }) => {
+     setDisplayPct(Math.round(value));
+   });
+   listenerRef.current = id;
+   Animated.timing(progress, {
+     toValue: bounded,
+     duration: 900,
+     easing: Easing.out(Easing.cubic),
+     useNativeDriver: false,
+   }).start();
+   return () => {
+     if (listenerRef.current) {
+       progress.removeListener(listenerRef.current);
+       listenerRef.current = null;
+     }
+   };
+ }, [progress, bounded]);
 
- const overHalf = p > 50;
- const rightRotation = (p > 50 ? 180 : (p / 50) * 180) + 'deg';
- const leftRotation = (overHalf ? ((p - 50) / 50) * 180 : 0) + 'deg';
-
+ const rightRotation = progress.interpolate({
+   inputRange: [0, 50, 100],
+   outputRange: ['0deg', '180deg', '180deg'],
+ });
+ const leftRotation = progress.interpolate({
+   inputRange: [0, 50, 100],
+   outputRange: ['0deg', '0deg', '180deg'],
+ });
+ const leftOpacity = progress.interpolate({
+   inputRange: [0, 49.999, 50, 100],
+   outputRange: [0, 0, 1, 1],
+   extrapolate: 'clamp',
+ });
 
  return (
    <View style={{ alignItems: 'center', marginTop: 12, marginBottom: 6 }}>
@@ -2210,7 +2483,7 @@ const Donut = ({ percent = 0, size = 120, strokeWidth = 12 }) => {
            overflow: 'hidden',
          }}
        >
-         <View
+         <Animated.View
            style={{
              position: 'absolute',
              width: size,
@@ -2233,7 +2506,7 @@ const Donut = ({ percent = 0, size = 120, strokeWidth = 12 }) => {
            left: 0,
          }}
        >
-         <View
+         <Animated.View
            style={{
              position: 'absolute',
              width: size,
@@ -2243,14 +2516,15 @@ const Donut = ({ percent = 0, size = 120, strokeWidth = 12 }) => {
              borderColor: BLUE,
              left: 0,
              transform: [{ rotateZ: leftRotation }],
+             opacity: leftOpacity,
            }}
          />
        </View>
 
 
        {/* center label */}
-       <Text style={{ color: 'white', fontWeight: '800', fontSize: 20 }}>{p}%</Text>
-       <Text style={{ color: '#9ca3af', fontSize: 12 }}>Readiness</Text>
+      <Text style={{ color: colors.donutLabel, fontWeight: '800', fontSize: 20 }}>{displayPct}%</Text>
+       <Text style={{ color: colors.textMuted, fontSize: 12 }}>Readiness</Text>
      </View>
    </View>
  );
@@ -2306,7 +2580,6 @@ function makeLabels(series, period) {
 const BLUE = '#3B82F6';
 const BLACK = '#000000';
 const WHITE = '#FFFFFF';
-const CARD = '#0b0b0b';
 const TEXT_MUTED = '#9CA3AF';
 const BORDER = '#1f2937';
 
@@ -2319,31 +2592,39 @@ const ELECTROLYTE = '#22c55e'; // green-500
 
 
 const styles = StyleSheet.create({
- screen: { flex: 1, backgroundColor: BLACK, justifyContent: 'space-between' },
+ screen: { flex: 1, backgroundColor: '#020617', position: 'relative' },
+ screenContent: { flex: 1, paddingTop: 12 },
  loadingScreen: {
    flex: 1,
-   backgroundColor: BLACK,
+   backgroundColor: '#020617',
    alignItems: 'center',
    justifyContent: 'center',
    paddingHorizontal: 24,
+   position: 'relative',
  },
  loadingText: { marginTop: 12, color: TEXT_MUTED, fontSize: 14 },
  authScreen: {
    flex: 1,
-   backgroundColor: BLACK,
+   backgroundColor: '#020617',
    alignItems: 'center',
    justifyContent: 'center',
    paddingHorizontal: 20,
    paddingBottom: 40,
+   position: 'relative',
  },
  authCard: {
    width: '100%',
    maxWidth: 420,
-   backgroundColor: CARD,
+   backgroundColor: 'rgba(12,18,32,0.88)',
    borderRadius: 16,
    borderWidth: 1,
    borderColor: BORDER,
    padding: 24,
+   shadowColor: '#020b2f',
+   shadowOpacity: 0.45,
+   shadowRadius: 26,
+   shadowOffset: { width: 0, height: 18 },
+   elevation: 12,
  },
  authHeading: { color: WHITE, fontSize: 28, fontWeight: '800', textAlign: 'center' },
  authSubtitle: { color: TEXT_MUTED, fontSize: 14, textAlign: 'center', marginTop: 8, marginBottom: 20 },
@@ -2376,39 +2657,57 @@ const styles = StyleSheet.create({
  },
  errorBannerText: { color: '#fca5a5', textAlign: 'center', fontSize: 13, fontWeight: '600' },
  scroll: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24 },
+ scrollContent: { paddingBottom: 90, paddingTop: 4 },
 
 
  hero: {
-   padding: 16,
-   borderRadius: 14,
-   marginTop: 8,
-   marginBottom: 16,
+   padding: 20,
+   borderRadius: 20,
+   marginTop: 12,
+   marginBottom: 24,
    borderWidth: 1,
-   borderColor: 'rgba(255,255,255,0.08)',
-   backgroundColor: BLUE,
+   borderColor: 'rgba(191,219,254,0.35)',
+   overflow: 'hidden',
+   shadowColor: '#1d4ed8',
+   shadowOpacity: 0.35,
+   shadowRadius: 28,
+   shadowOffset: { width: 0, height: 16 },
+   elevation: 10,
  },
- appName: { color: WHITE, fontSize: 16, fontWeight: '700' },
- heroText: { color: 'white', fontSize: 18, marginTop: 6 },
+ appName: { color: '#e0f2fe', fontSize: 18, fontWeight: '800', letterSpacing: 0.3 },
+ heroText: { color: WHITE, fontSize: 20, marginTop: 10, fontWeight: '600' },
 
 
- quickRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+ quickRow: { flexDirection: 'row', gap: 12, marginBottom: 14 },
  quickBtn: {
    flex: 1,
    paddingVertical: 14,
-   borderRadius: 12,
+   borderRadius: 16,
    alignItems: 'center',
    justifyContent: 'center',
    gap: 6,
+   borderWidth: 1,
+   borderColor: 'rgba(255,255,255,0.1)',
+   shadowColor: '#020617',
+   shadowOpacity: 0.3,
+   shadowRadius: 16,
+   shadowOffset: { width: 0, height: 10 },
+   elevation: 6,
  },
- quickText: { color: WHITE, fontWeight: '700' },
+ quickText: { color: WHITE, fontWeight: '800', letterSpacing: 0.2 },
 
  analysisCard: {
-   backgroundColor: '#0f172a',
+   backgroundColor: 'rgba(12,18,32,0.92)',
    borderWidth: 1,
-   borderColor: BORDER,
-   borderRadius: 14,
-   padding: 16,
-   marginTop: 12,
+   borderColor: 'rgba(148,163,184,0.14)',
+   borderRadius: 18,
+   padding: 18,
+   marginTop: 14,
+   shadowColor: '#020b2f',
+   shadowOpacity: 0.35,
+   shadowRadius: 20,
+   shadowOffset: { width: 0, height: 14 },
+   elevation: 8,
  },
  analysisCardTitle: { color: WHITE, fontSize: 16, fontWeight: '700', marginBottom: 8 },
  analysisItem: { marginBottom: 8 },
@@ -2417,8 +2716,20 @@ const styles = StyleSheet.create({
  analysisErrorText: { color: '#fca5a5', textAlign: 'center', marginTop: 12 },
  emptyStateText: { color: TEXT_MUTED, textAlign: 'center', marginTop: 32 },
 
- card: { backgroundColor: CARD, borderWidth: 1, borderColor: BORDER, borderRadius: 14, padding: 14, marginBottom: 12 },
- cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+ card: {
+   backgroundColor: 'rgba(12,18,32,0.88)',
+   borderWidth: 1,
+   borderColor: 'rgba(148,163,184,0.12)',
+   borderRadius: 18,
+   padding: 16,
+   marginBottom: 16,
+   shadowColor: '#010813',
+   shadowOpacity: 0.4,
+   shadowRadius: 18,
+   shadowOffset: { width: 0, height: 14 },
+   elevation: 7,
+ },
+ cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
  cardTitle: { color: WHITE, fontSize: 16, fontWeight: '700' },
  cardValue: { color: TEXT_MUTED, fontSize: 14 },
 
@@ -2490,22 +2801,29 @@ const styles = StyleSheet.create({
  calendarFootnote: { color: TEXT_MUTED, fontSize: 12, textAlign: 'center', marginTop: 16 },
 
 
- progressTrack: { height: 10, backgroundColor: '#111827', borderRadius: 999, overflow: 'hidden' },
+ progressTrack: {
+   height: 12,
+   backgroundColor: 'rgba(15,23,42,0.85)',
+   borderRadius: 999,
+   overflow: 'hidden',
+   borderWidth: 1,
+   borderColor: 'rgba(148,163,184,0.12)',
+ },
  progressFill: { height: '100%', borderRadius: 999 },
- progressCaption: { color: TEXT_MUTED, fontSize: 12, marginTop: 8 },
+ progressCaption: { color: '#a5b4fc', fontSize: 12, marginTop: 8, fontWeight: '600', letterSpacing: 0.2 },
 
 
- screenTitle: { color: WHITE, fontSize: 22, fontWeight: '800', marginBottom: 10, marginTop: 8 },
- switchRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, marginTop: 8 },
+ screenTitle: { color: WHITE, fontSize: 24, fontWeight: '800', marginBottom: 12, marginTop: 10, letterSpacing: 0.4 },
+ switchRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, marginTop: 14 },
 
 
  pill: {
    paddingVertical: 10,
    paddingHorizontal: 14,
    borderRadius: 999,
-   backgroundColor: '#111827',
+   backgroundColor: 'rgba(15,23,42,0.78)',
    borderWidth: 1,
-   borderColor: BORDER,
+   borderColor: 'rgba(148,163,184,0.18)',
  },
  pillText: { color: WHITE, fontWeight: '700' },
  pillActive: { backgroundColor: BLUE, borderColor: BLUE },
@@ -2552,11 +2870,38 @@ const styles = StyleSheet.create({
  xLabelText: { color: '#6b7280', fontSize: 11 },
 
 
- tabRow: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: '#111827', backgroundColor: BLACK, paddingVertical: 10 },
- tabItem: { flex: 1, alignItems: 'center', gap: 4 },
- tabText: { color: '#9ca3af', fontSize: 12 },
- tabTextActive: { color: BLUE, fontWeight: '700' },
- tabActive: { borderBottomWidth: 2, borderBottomColor: BLUE },
+ tabRow: {
+   flexDirection: 'row',
+   alignItems: 'center',
+   justifyContent: 'space-between',
+   paddingHorizontal: 18,
+   paddingVertical: 14,
+   borderTopWidth: 1,
+   borderTopColor: 'rgba(148,163,184,0.16)',
+   backgroundColor: 'rgba(2,6,23,0.94)',
+   shadowColor: '#000',
+   shadowOpacity: 0.45,
+   shadowRadius: 26,
+   shadowOffset: { width: 0, height: -12 },
+   elevation: 14,
+ },
+ tabItem: {
+   flex: 1,
+   alignItems: 'center',
+   gap: 6,
+   paddingVertical: 10,
+   borderRadius: 16,
+ },
+ tabText: { color: '#9ca3af', fontSize: 12, fontWeight: '600', letterSpacing: 0.3 },
+ tabTextActive: { color: '#e0f2fe', fontWeight: '800' },
+ tabActive: {
+   backgroundColor: 'rgba(37,99,235,0.18)',
+   shadowColor: '#2563eb',
+   shadowOpacity: 0.35,
+   shadowRadius: 16,
+   shadowOffset: { width: 0, height: 10 },
+   elevation: 8,
+ },
 
 
  inputLabel: { color: TEXT_MUTED, fontSize: 12, marginBottom: 6 },
@@ -2566,16 +2911,44 @@ const styles = StyleSheet.create({
 
  saveBtn: { marginTop: 16, backgroundColor: BLUE, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
  saveBtnText: { color: WHITE, fontWeight: '700' },
+ themeCard: { marginTop: 18 },
+ themeOptionsRow: { flexDirection: 'row', gap: 12, marginTop: 12 },
+ themeOption: {
+   flex: 1,
+   borderWidth: 1,
+   borderColor: 'rgba(148,163,184,0.25)',
+   borderRadius: 14,
+   padding: 14,
+   backgroundColor: 'rgba(12,18,32,0.6)',
+ },
+ themeOptionActive: {
+   borderColor: BLUE,
+   backgroundColor: 'rgba(37,99,235,0.15)',
+ },
+ themeOptionLabel: { color: WHITE, fontSize: 16, fontWeight: '700' },
+ themeOptionHint: { color: TEXT_MUTED, fontSize: 12, marginTop: 4 },
 
 
- modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'center', justifyContent: 'center', padding: 16 },
- modalCard: { width: '100%', backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: BORDER, padding: 16 },
+ modalBackdrop: { flex: 1, backgroundColor: 'rgba(3,7,18,0.78)', alignItems: 'center', justifyContent: 'center', padding: 16 },
+ modalCard: {
+   width: '100%',
+   backgroundColor: 'rgba(10,14,26,0.96)',
+   borderRadius: 20,
+   borderWidth: 1,
+   borderColor: 'rgba(148,163,184,0.16)',
+   padding: 18,
+   shadowColor: '#030712',
+   shadowOpacity: 0.45,
+   shadowRadius: 18,
+   shadowOffset: { width: 0, height: 12 },
+   elevation: 12,
+ },
  modalTitle: { color: WHITE, fontSize: 18, fontWeight: '800', marginBottom: 10 },
  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 12 },
  modalBtn: { backgroundColor: BLUE, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
  modalBtnText: { color: WHITE, fontWeight: '700' },
- btnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: BORDER },
- btnGhostText: { color: TEXT_MUTED, fontWeight: '700' },
+ btnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: 'rgba(148,163,184,0.4)' },
+ btnGhostText: { color: '#e0e7ff', fontWeight: '700' },
 
 
  packetRow: {
@@ -2599,67 +2972,240 @@ const styles = StyleSheet.create({
  signOutText: { color: '#ef4444', fontWeight: '700' },
 });
 
+const lightOverrides = StyleSheet.create({
+  screen: { backgroundColor: '#f8fafc' },
+  loadingScreen: { backgroundColor: '#f8fafc' },
+  loadingText: { color: '#475569' },
+  authScreen: { backgroundColor: '#f8fafc' },
+  authCard: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  authHeading: { color: '#0f172a' },
+  authSubtitle: { color: '#475569' },
+  authLabel: { color: '#475569' },
+  authInput: { backgroundColor: '#ffffff', borderColor: '#cbd5f5', color: '#0f172a' },
+  authToggleText: { color: '#475569' },
+  authError: { color: '#dc2626' },
+  errorBanner: { backgroundColor: '#fee2e2', borderColor: '#fecaca' },
+  errorBannerText: { color: '#b91c1c' },
+  hero: { borderColor: 'rgba(148,163,184,0.45)', shadowColor: 'rgba(15,23,42,0.15)' },
+  appName: { color: '#0f172a' },
+  heroText: { color: '#0f172a' },
+  quickBtn: { borderColor: 'rgba(15,23,42,0.08)', shadowColor: 'rgba(15,23,42,0.15)' },
+  analysisCard: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  analysisCardTitle: { color: '#0f172a' },
+  analysisItemCategory: { color: '#475569' },
+  analysisItemText: { color: '#0f172a' },
+  analysisErrorText: { color: '#b91c1c' },
+  emptyStateText: { color: '#475569' },
+  card: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  cardTitle: { color: '#0f172a' },
+  cardValue: { color: '#475569' },
+  reminderNote: { color: '#475569' },
+  reminderLabel: { color: '#0f172a' },
+  reminderSubLabel: { color: '#475569' },
+  reminderTimeBox: { backgroundColor: '#f8fafc', borderColor: '#cbd5f5' },
+  reminderTimeInput: { color: '#0f172a' },
+  calendarHeaderText: { color: '#0f172a' },
+  calendarNavBtn: { borderColor: '#cbd5f5' },
+  legendLabel: { color: '#475569' },
+  calendarWeekLabel: { color: '#475569' },
+  calendarCell: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  calendarCellDate: { color: '#0f172a' },
+  calendarCellDateMuted: { color: '#94a3b8' },
+  calendarCellBadgeEmpty: { backgroundColor: '#e2e8f0' },
+  calendarFootnote: { color: '#475569' },
+  progressTrack: { backgroundColor: '#e2e8f0', borderColor: '#cbd5f5' },
+  progressCaption: { color: '#475569' },
+  screenTitle: { color: '#0f172a' },
+  pill: { backgroundColor: '#e2e8f0', borderColor: '#cbd5f5' },
+  pillText: { color: '#0f172a' },
+  seg: { backgroundColor: '#e2e8f0', borderColor: '#cbd5f5' },
+  segActive: { backgroundColor: '#dbeafe' },
+  segText: { color: '#475569' },
+  segTextActive: { color: '#1d4ed8' },
+  periodBtn: { backgroundColor: '#e2e8f0', borderColor: '#cbd5f5' },
+  periodBtnActive: { backgroundColor: '#dbeafe' },
+  periodText: { color: '#475569' },
+  periodTextActive: { color: '#1e3a8a' },
+  insight: { color: '#475569' },
+  barLabel: { color: '#0f172a' },
+  barPct: { color: '#475569' },
+  barTrack: { backgroundColor: '#e2e8f0' },
+  gridLine: { backgroundColor: '#e2e8f0' },
+  dot: { backgroundColor: '#0f172a' },
+  xLabelText: { color: '#94a3b8' },
+  tabRow: { backgroundColor: '#ffffff', borderTopColor: '#e2e8f0' },
+  tabText: { color: '#475569' },
+  tabTextActive: { color: '#1d4ed8' },
+  tabActive: { backgroundColor: 'rgba(37,99,235,0.12)', shadowColor: 'rgba(37,99,235,0.3)' },
+  inputLabel: { color: '#475569' },
+  inputBox: { backgroundColor: '#f8fafc', borderColor: '#cbd5f5' },
+  input: { color: '#0f172a' },
+  modalBackdrop: { backgroundColor: 'rgba(15,23,42,0.25)' },
+  modalCard: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  modalTitle: { color: '#0f172a' },
+  btnGhost: { borderColor: '#cbd5f5' },
+  btnGhostText: { color: '#1d4ed8' },
+  packetRow: { borderTopColor: 'rgba(15,23,42,0.08)' },
+  delBtn: { backgroundColor: '#f8fafc', borderColor: '#cbd5f5' },
+  delBtnText: { color: '#b91c1c' },
+  signOutBtn: { borderColor: '#dc2626' },
+  signOutText: { color: '#b91c1c' },
+  themeOption: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  themeOptionActive: { backgroundColor: '#dbeafe' },
+  themeOptionLabel: { color: '#0f172a' },
+  themeOptionHint: { color: '#475569' },
+});
+
+const styleVariants = {
+  dark: styles,
+  light: mergeStyles(styles, lightOverrides),
+};
+
+const THEME_COLORS = {
+  dark: DEFAULT_THEME_COLORS,
+  light: {
+    ...DEFAULT_THEME_COLORS,
+    textPrimary: '#0f172a',
+    textMuted: '#475569',
+    divider: 'rgba(148,163,184,0.4)',
+    overlay: 'rgba(15,23,42,0.25)',
+    tabIcon: '#475569',
+    tabIconActive: '#1d4ed8',
+    reminderSwitchTrack: '#cbd5f5',
+    reminderSwitchIos: '#e2e8f0',
+    donutLabel: '#0f172a',
+  },
+};
+
+function mergeStyles(base, overrides) {
+  const merged = { ...base };
+  Object.keys(overrides).forEach((key) => {
+    merged[key] = base[key] ? [base[key], overrides[key]] : overrides[key];
+  });
+  return merged;
+}
+
 
 /* -------- small UI bits -------- */
 
 
-const QuickButton = ({ label, onPress, color, icon }) => (
- <Pressable
-   onPress={onPress}
-   style={({ pressed }) => [styles.quickBtn, { backgroundColor: color, opacity: pressed ? 0.88 : 1 }]}
- >
-   {icon}
-   <Text style={styles.quickText}>{label}</Text>
- </Pressable>
-);
+const QuickButton = ({ label, onPress, color, icon }) => {
+ const { styles } = useThemeContext();
+ const scale = useRef(new Animated.Value(1)).current;
+
+ const handlePressIn = () => {
+   Animated.spring(scale, {
+     toValue: 0.95,
+     useNativeDriver: true,
+     speed: 20,
+     bounciness: 6,
+   }).start();
+ };
+
+ const handlePressOut = () => {
+   Animated.spring(scale, {
+     toValue: 1,
+     useNativeDriver: true,
+     speed: 20,
+     bounciness: 6,
+   }).start();
+ };
+
+ return (
+   <Animated.View style={{ flex: 1, transform: [{ scale }] }}>
+     <Pressable
+       onPress={onPress}
+       onPressIn={handlePressIn}
+       onPressOut={handlePressOut}
+       style={({ pressed }) => [
+         styles.quickBtn,
+         { backgroundColor: color, opacity: pressed ? 0.88 : 1 },
+       ]}
+     >
+       {icon}
+       <Text style={styles.quickText}>{label}</Text>
+     </Pressable>
+   </Animated.View>
+ );
+};
 
 
-const ProgressCard = ({ label, valueText, pct, color }) => (
- <View style={styles.card}>
-   <View style={styles.cardHeader}>
-     <Text style={styles.cardTitle}>{label}</Text>
-     <Text style={styles.cardValue}>{valueText}</Text>
+const ProgressCard = ({ label, valueText, pct, color }) => {
+ const { styles } = useThemeContext();
+ const bounded = Math.max(0, Math.min(100, pct));
+ const progress = useRef(new Animated.Value(bounded)).current;
+
+ useEffect(() => {
+   Animated.timing(progress, {
+     toValue: bounded,
+     duration: 480,
+     easing: Easing.out(Easing.cubic),
+     useNativeDriver: false,
+   }).start();
+ }, [bounded, progress]);
+
+ const width = progress.interpolate({
+   inputRange: [0, 100],
+   outputRange: ['0%', '100%'],
+ });
+
+ return (
+   <View style={styles.card}>
+     <View style={styles.cardHeader}>
+       <Text style={styles.cardTitle}>{label}</Text>
+       <Text style={styles.cardValue}>{valueText}</Text>
+     </View>
+     <View style={styles.progressTrack}>
+       <Animated.View style={[styles.progressFill, { width, backgroundColor: color }]} />
+     </View>
+     <Text style={styles.progressCaption}>{bounded}% of goal</Text>
    </View>
-   <View style={styles.progressTrack}>
-     <View style={[styles.progressFill, { width: `${pct}%`, backgroundColor: color }]} />
+ );
+};
+
+
+const SwitchPill = ({ text, onPress }) => {
+ const { styles } = useThemeContext();
+ return (
+   <TouchableOpacity onPress={onPress} style={styles.pill}>
+     <Text style={styles.pillText}>{text}</Text>
+   </TouchableOpacity>
+ );
+};
+
+
+const GoalInput = ({ label, value, onChange }) => {
+ const { styles } = useThemeContext();
+ return (
+   <View style={{ marginTop: 12 }}>
+     <Text style={styles.inputLabel}>{label}</Text>
+     <View style={styles.inputBox}>
+       <TextInput
+         value={value}
+         onChangeText={onChange}
+         keyboardType="numeric"
+         placeholder="0"
+         placeholderTextColor="#6b7280"
+         style={styles.input}
+       />
+     </View>
    </View>
-   <Text style={styles.progressCaption}>{pct}% of goal</Text>
- </View>
-);
+ );
+};
 
 
-const SwitchPill = ({ text, onPress }) => (
- <TouchableOpacity onPress={onPress} style={styles.pill}>
-   <Text style={styles.pillText}>{text}</Text>
- </TouchableOpacity>
-);
-
-
-const GoalInput = ({ label, value, onChange }) => (
- <View style={{ marginTop: 12 }}>
-   <Text style={styles.inputLabel}>{label}</Text>
-   <View style={styles.inputBox}>
-     <TextInput
-       value={value}
-       onChangeText={onChange}
-       keyboardType="numeric"
-       placeholder="0"
-       placeholderTextColor="#6b7280"
-       style={styles.input}
-     />
-   </View>
- </View>
-);
-
-
-const PeriodBtn = ({ text, on, active }) => (
- <TouchableOpacity onPress={on} style={[styles.periodBtn, active && styles.periodBtnActive]}>
-   <Text style={[styles.periodText, active && styles.periodTextActive]}>{text}</Text>
- </TouchableOpacity>
-);
+const PeriodBtn = ({ text, on, active }) => {
+ const { styles } = useThemeContext();
+ return (
+   <TouchableOpacity onPress={on} style={[styles.periodBtn, active && styles.periodBtnActive]}>
+     <Text style={[styles.periodText, active && styles.periodTextActive]}>{text}</Text>
+   </TouchableOpacity>
+ );
+};
 
 
 const ElectrolytePicker = ({ selected, onSelect }) => {
+ const { styles } = useThemeContext();
  const keys = ['sodium', 'potassium', 'chloride', 'magnesium', 'calcium', 'phosphate', 'bicarbonate'];
  return (
    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 }}>
@@ -2677,16 +3223,45 @@ const ElectrolytePicker = ({ selected, onSelect }) => {
 };
 
 
-const SegBtn = ({ text, active, onPress }) => (
- <Pressable onPress={onPress} style={[styles.seg, active && styles.segActive]}>
-   <Text style={[styles.segText, active && styles.segTextActive]}>{text}</Text>
- </Pressable>
-);
+const SegBtn = ({ text, active, onPress }) => {
+ const { styles } = useThemeContext();
+ return (
+   <Pressable onPress={onPress} style={[styles.seg, active && styles.segActive]}>
+     <Text style={[styles.segText, active && styles.segTextActive]}>{text}</Text>
+   </Pressable>
+ );
+};
 
 
-const TabBtn = ({ label, icon, active, onPress }) => (
- <TouchableOpacity onPress={onPress} style={[styles.tabItem, active && styles.tabActive]}>
-   <Ionicons name={icon} size={18} color={active ? BLUE : '#9ca3af'} />
-   <Text style={[styles.tabText, active && styles.tabTextActive]}>{label}</Text>
- </TouchableOpacity>
-);
+const TabBtn = ({ label, icon, active, onPress }) => {
+ const { styles, colors } = useThemeContext();
+ const scale = useRef(new Animated.Value(active ? 1 : 0.96)).current;
+
+ useEffect(() => {
+   Animated.spring(scale, {
+     toValue: active ? 1 : 0.96,
+     useNativeDriver: true,
+     friction: 9,
+     tension: 120,
+   }).start();
+ }, [active, scale]);
+
+ return (
+   <AnimatedTouchableOpacity
+     onPress={onPress}
+     activeOpacity={0.85}
+     style={[
+       styles.tabItem,
+       active && styles.tabActive,
+       { transform: [{ scale }] },
+     ]}
+   >
+    <Ionicons
+      name={icon}
+      size={18}
+      color={active ? colors.tabIconActive : colors.tabIcon}
+    />
+     <Text style={[styles.tabText, active && styles.tabTextActive]}>{label}</Text>
+   </AnimatedTouchableOpacity>
+ );
+};
