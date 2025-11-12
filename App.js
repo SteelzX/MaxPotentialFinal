@@ -162,6 +162,67 @@ const sanitizeHistory = (list) => {
   }));
 };
 
+const hasElectrolyteIntake = (electrolytes = {}) =>
+  Object.values(electrolytes).some((value) => (Number(value) || 0) > 0);
+
+const meetsDailyTargets = (entry, goals = defaultGoals) => {
+  if (!entry) return false;
+  const waterGoal = goals?.waterMl ?? defaultGoals.waterMl;
+  const sleepGoal = goals?.sleepHr ?? defaultGoals.sleepHr;
+  const workoutGoal = goals?.workout ?? defaultGoals.workout;
+
+  const waterMet = (entry.waterMl || 0) >= waterGoal;
+  const sleepMet = (entry.sleepHr || 0) >= Math.max(0, sleepGoal * 0.9);
+  const workoutsLogged = Array.isArray(entry.workoutSessions)
+    ? entry.workoutSessions.length
+    : Number(entry.workout || 0);
+  const workoutMet = workoutGoal <= 0 ? true : workoutsLogged >= Math.min(1, workoutGoal);
+
+  return waterMet && sleepMet && workoutMet;
+};
+
+const computeConsistencyStreak = (history = [], today, goals = defaultGoals) => {
+  const map = new Map();
+  history.forEach((entry) => {
+    if (entry?.dateKey) map.set(entry.dateKey, entry);
+  });
+  if (today?.dateKey) map.set(today.dateKey, today);
+
+  const start = today?.dateKey ? new Date(today.dateKey) : new Date();
+  if (Number.isNaN(start.getTime())) start.setTime(Date.now());
+  start.setHours(0, 0, 0, 0);
+
+  let streak = 0;
+  const cursor = new Date(start);
+  while (true) {
+    const key = cursor.toISOString().slice(0, 10);
+    const entry = map.get(key);
+    if (!meetsDailyTargets(entry, goals)) break;
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+};
+
+const describeNextReminder = (timeString, now = new Date()) => {
+  const parsed = parseTimeString(timeString);
+  if (!parsed) return null;
+  const target = new Date(now);
+  target.setHours(parsed.hour, parsed.minute, 0, 0);
+  if (target <= now) {
+    target.setDate(target.getDate() + 1);
+  }
+  const diffMs = target.getTime() - now.getTime();
+  const hours = Math.floor(diffMs / 3600000);
+  const minutes = Math.round((diffMs % 3600000) / 60000);
+  const parts = [];
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (!parts.length) parts.push('<1m');
+  const pad = (n) => String(n).padStart(2, '0');
+  return `Next alert in ${parts.join(' ')} (${pad(parsed.hour)}:${pad(parsed.minute)})`;
+};
+
 const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
@@ -200,6 +261,7 @@ export default function App() {
  const [analysisError, setAnalysisError] = useState('');
  const [reminders, setReminders] = useState(() => ({ ...defaultReminders }));
  const [appearance, setAppearance] = useState('dark');
+ const [workoutInputMode, setWorkoutInputMode] = useState('standard'); // 'standard' | 'advanced'
  const [notificationStatus, setNotificationStatus] = useState(null);
  const themeColors = useMemo(
    () => (appearance === 'light' ? THEME_COLORS.light : THEME_COLORS.dark),
@@ -293,6 +355,7 @@ export default function App() {
     setElectrolytePackets(() => [...defaultElectrolytePackets]);
     setHistory(defaultHistory());
     setAppearance('dark');
+    setWorkoutInputMode('standard');
     setRoute('home');
       return () => {
         active = false;
@@ -320,6 +383,9 @@ export default function App() {
           setHistory(sanitizedHistory);
           setReminders(sanitizeReminders(data.reminders));
           setAppearance(data?.preferences?.theme === 'light' ? 'light' : 'dark');
+          setWorkoutInputMode(
+            data?.preferences?.workoutInputMode === 'advanced' ? 'advanced' : 'standard'
+          );
         } else {
           setGoals(() => ({ ...defaultGoals }));
           setToday(makeDefaultToday());
@@ -327,6 +393,7 @@ export default function App() {
           setHistory(defaultHistory());
           setReminders({ ...defaultReminders });
           setAppearance('dark');
+          setWorkoutInputMode('standard');
         }
       } catch (error) {
         if (!active) return;
@@ -356,7 +423,7 @@ export default function App() {
       history,
       electrolytePackets,
       reminders,
-      preferences: { theme: appearance },
+      preferences: { theme: appearance, workoutInputMode },
       updatedAt: Date.now(),
     };
     saveTimerRef.current = setTimeout(() => {
@@ -381,7 +448,17 @@ export default function App() {
       saveTimerRef.current = null;
     }
   };
-}, [firebaseUser, dataLoaded, goals, today, history, electrolytePackets, triggerDailyAnalysis, appearance]);
+}, [
+  firebaseUser,
+  dataLoaded,
+  goals,
+  today,
+  history,
+  electrolytePackets,
+  triggerDailyAnalysis,
+  appearance,
+  workoutInputMode,
+]);
 
  useEffect(() => {
    if (!firebaseUser || !dataLoaded || !ANALYTICS_API_URL) return;
@@ -414,7 +491,7 @@ export default function App() {
           history: defaultHistory(),
           electrolytePackets: [...defaultElectrolytePackets],
           reminders: { ...defaultReminders },
-          preferences: { theme: 'dark' },
+          preferences: { theme: 'dark', workoutInputMode: 'standard' },
           createdAt: Date.now(),
         });
       } else {
@@ -538,7 +615,15 @@ export default function App() {
    }
  }, []);
 
- const buildDailyAnalysisPayload = useCallback(() => {
+  const removeWorkoutSession = useCallback((sessionId) => {
+    if (!sessionId) return;
+    setToday((prev) => ({
+      ...prev,
+      workoutSessions: prev.workoutSessions.filter((session) => session.id !== sessionId),
+    }));
+  }, []);
+
+  const buildDailyAnalysisPayload = useCallback(() => {
    if (!firebaseUser) return null;
    const dateKey = today.dateKey || getTodayKey();
    const historyWithoutToday = history.filter((entry) => entry.id !== dateKey);
@@ -593,9 +678,9 @@ export default function App() {
  }, [buildDailyAnalysisPayload]);
 
 
- // Log modal
- const [modal, setModal] = useState({ type: null }); // 'water' | 'sleep' | 'workout' | 'electrolyte' | null
- const [inputValue, setInputValue] = useState('');
+// Log modal
+const [modal, setModal] = useState({ type: null, mode: 'add' }); // mode: 'add' | 'edit'
+const [inputValue, setInputValue] = useState('');
 
 
  // WATER: mL vs Bottle modes
@@ -614,48 +699,69 @@ export default function App() {
    phosphate: '',
    bicarbonate: '',
  };
- const [batchElectrolytes, setBatchElectrolytes] = useState(emptyBatch);
+const [batchElectrolytes, setBatchElectrolytes] = useState(emptyBatch);
 
 
- // Workout form state
- const [workoutType, setWorkoutType] = useState(null); // 'strength' | 'running_steady' | 'running_sprint'
- const [numSets, setNumSets] = useState(0);
- const [setsDetail, setSetsDetail] = useState([]); // [{effort:'before_failure'|'to_failure'|'past_failure', rir?:number}]
- const [runMinutes, setRunMinutes] = useState('');
- const [runPerceived, setRunPerceived] = useState('');
- const [sprintDistance, setSprintDistance] = useState('');
- const [sprintPerceived, setSprintPerceived] = useState('');
+useEffect(() => {
+  if (modal.type !== 'electrolyte' || modal.mode !== 'edit') return;
+  if (electrolyteMode !== 'single') return;
+  const current = today.electrolytes?.[electrolyteKey];
+  if (current == null) {
+    setInputValue('0');
+    return;
+  }
+  setInputValue(String(current));
+}, [modal.type, modal.mode, electrolyteMode, electrolyteKey, today.electrolytes]);
 
 
- const openModal = (type) => {
-   setInputValue('');
-   if (type === 'workout') {
-     setWorkoutType(null);
-     setNumSets(0);
-     setSetsDetail([]);
-     setRunMinutes('');
-     setRunPerceived('');
-     setSprintDistance('');
-     setSprintPerceived('');
-   }
+// Workout form state
+const [workoutType, setWorkoutType] = useState(null); // 'strength' | 'running_steady' | 'running_sprint'
+const [numSets, setNumSets] = useState(0);
+const [setsDetail, setSetsDetail] = useState([]); // [{effort:'before_failure'|'to_failure'|'past_failure', rir?:number}]
+const [runMinutes, setRunMinutes] = useState('');
+const [runPerceived, setRunPerceived] = useState('');
+const [sprintDistance, setSprintDistance] = useState('');
+const [sprintPerceived, setSprintPerceived] = useState('');
+const [simpleWorkoutTemplate, setSimpleWorkoutTemplate] = useState('strength_guided');
+const [simpleDuration, setSimpleDuration] = useState('');
+const [simpleEffort, setSimpleEffort] = useState('moderate'); // 'easy' | 'moderate' | 'hard'
+const [simpleNotes, setSimpleNotes] = useState('');
+
+const resetWorkoutFormState = () => {
+  setWorkoutType(null);
+  setNumSets(0);
+  setSetsDetail([]);
+  setRunMinutes('');
+  setRunPerceived('');
+  setSprintDistance('');
+  setSprintPerceived('');
+  setSimpleWorkoutTemplate('strength_guided');
+  setSimpleDuration('');
+  setSimpleEffort('moderate');
+  setSimpleNotes('');
+};
+
+ const openModal = (type, options = {}) => {
+   const mode = options.mode || 'add';
+  if (type === 'workout') {
+    resetWorkoutFormState();
+  }
    if (type === 'water') setWaterLogMode('ml'); // default to mL each time
    if (type === 'electrolyte') {
      setElectrolyteMode('single');
-     setElectrolyteKey('sodium');
+     setElectrolyteKey(options.initialKey || 'sodium');
      setBatchElectrolytes(emptyBatch);
    }
-   setModal({ type });
+   const presetValue =
+     mode === 'edit' && options.initialValue != null ? String(options.initialValue) : '';
+   setInputValue(presetValue);
+   setModal({ type, mode });
  };
  const closeModal = () => {
-   setModal({ type: null });
-   setWorkoutType(null);
-   setNumSets(0);
-   setSetsDetail([]);
-   setRunMinutes('');
-   setRunPerceived('');
-   setSprintDistance('');
-   setSprintPerceived('');
- };
+   setModal({ type: null, mode: 'add' });
+   setInputValue('');
+   resetWorkoutFormState();
+};
 
 
  // Helpers
@@ -927,27 +1033,145 @@ const parseFractionOrNumber = (s) => {
    return Number.isFinite(n) && n > 0 ? n : 0;
  };
 
+ const defaultDurationForTemplate = (template) => {
+   if (template === 'hiit_sprints') return 20;
+   if (template === 'cardio_steady') return 30;
+   return 30;
+ };
+
+ const buildStandardSession = (id) => {
+   const template = simpleWorkoutTemplate;
+   const effort = SIMPLE_EFFORT_OPTIONS.find((opt) => opt.key === simpleEffort)
+     ? simpleEffort
+     : 'moderate';
+   const durationInput = Number(simpleDuration);
+   const duration = Math.max(5, Number.isFinite(durationInput) && durationInput > 0 ? durationInput : defaultDurationForTemplate(template));
+   const notes = simpleNotes.trim();
+   const metaBase = {
+     mode: 'standard',
+     template,
+     effort,
+     durationMin: duration,
+     recordedAt: id,
+     ...(notes ? { notes } : {}),
+   };
+
+   if (template === 'strength_guided') {
+     const effortMap = {
+       easy: { effort: 'before_failure', rir: 4 },
+       moderate: { effort: 'before_failure', rir: 2 },
+       hard: { effort: 'to_failure' },
+     };
+     const conf = effortMap[effort] || effortMap.moderate;
+     const setCount = Math.max(2, Math.min(6, Math.round(duration / 8) || 4));
+     const sets = Array.from({ length: setCount }).map((_, idx) => ({
+       idx: idx + 1,
+       effort: conf.effort,
+       ...(conf.rir != null ? { rir: conf.rir } : {}),
+     }));
+     return { id, type: 'strength', strength: { sets }, meta: metaBase };
+   }
+
+   if (template === 'cardio_steady') {
+     const perceivedMap = { easy: 4, moderate: 6, hard: 8 };
+     return {
+       id,
+       type: 'running_steady',
+       running_steady: { minutes: duration, perceived: perceivedMap[effort] || 6 },
+       meta: metaBase,
+     };
+   }
+
+ if (template === 'hiit_sprints') {
+   const sprintPct = { easy: 60, moderate: 75, hard: 90 };
+   const distance = Math.max(200, Math.round(duration * 120));
+   return {
+     id,
+     type: 'running_sprint',
+     running_sprint: { distance_m: distance, perceivedPct: sprintPct[effort] || 75 },
+     meta: metaBase,
+   };
+ }
+
+  return null;
+};
+
+const formatWorkoutTime = (isoString) => {
+  if (!isoString) return null;
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return null;
+  const hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const hour12 = ((hours + 11) % 12) + 1;
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  return `${hour12}:${minutes} ${suffix}`;
+};
+
+const describeWorkoutSummary = (session) => {
+  if (!session) return 'Workout';
+  if (session.type === 'strength') {
+    const sets = session?.strength?.sets?.length || 0;
+    return `${sets} set${sets === 1 ? '' : 's'} strength`;
+  }
+  if (session.type === 'running_steady') {
+    const minutes = session?.running_steady?.minutes || 0;
+    return `${minutes} min steady cardio`;
+  }
+  if (session.type === 'running_sprint') {
+    const distance = session?.running_sprint?.distance_m || 0;
+    return `${distance} m sprints`;
+  }
+  return 'Workout';
+};
+
+const describeWorkoutMeta = (session) => {
+  if (!session) return '';
+  const timeLabel = formatWorkoutTime(session?.meta?.recordedAt);
+  if (session.type === 'strength') {
+    const effort = session?.strength?.sets?.[0]?.effort;
+    const effortLabel = effort ? effort.replace(/_/g, ' ') : null;
+    return [timeLabel, effortLabel ? `Effort: ${effortLabel}` : null]
+      .filter(Boolean)
+      .join(' • ');
+  }
+  if (session.type === 'running_steady') {
+    const perceived = session?.running_steady?.perceived;
+    return [timeLabel, perceived ? `RPE ${perceived}` : null].filter(Boolean).join(' • ');
+  }
+  if (session.type === 'running_sprint') {
+    const pct = session?.running_sprint?.perceivedPct;
+    return [timeLabel, pct ? `${pct}% effort` : null].filter(Boolean).join(' • ');
+  }
+  return timeLabel || '';
+};
+
 
  const addEntry = () => {
    const val = Number(inputValue);
+   const isEditMode = modal.mode === 'edit';
 
 
    if (modal.type === 'water') {
-     let mlToAdd = 0;
+     let mlAmount = NaN;
 
 
      if (waterLogMode === 'ml') {
-       if (!Number.isNaN(val) && val > 0) mlToAdd = val;
+       if (!Number.isNaN(val)) mlAmount = val;
      } else {
        const bottles = parseFractionOrNumber(inputValue);
-       if (Number.isFinite(bottles) && bottles > 0) {
-         mlToAdd = Math.round(bottles * (goals.waterBottleMl || 0));
+       if (Number.isFinite(bottles)) {
+         mlAmount = Math.round(bottles * (goals.waterBottleMl || 0));
        }
      }
 
 
-     if (mlToAdd > 0) {
-       setToday((p) => ({ ...p, waterMl: p.waterMl + mlToAdd }));
+     if (!Number.isNaN(mlAmount)) {
+       const sanitized = Math.max(0, mlAmount);
+       if (isEditMode) {
+         setToday((p) => ({ ...p, waterMl: sanitized }));
+       } else if (sanitized > 0) {
+         setToday((p) => ({ ...p, waterMl: p.waterMl + sanitized }));
+       }
      }
      closeModal();
      return;
@@ -955,8 +1179,14 @@ const parseFractionOrNumber = (s) => {
 
 
    if (modal.type === 'sleep') {
-     if (!Number.isNaN(val) && val > 0)
-       setToday((p) => ({ ...p, sleepHr: +(p.sleepHr + val).toFixed(2) }));
+     if (!Number.isNaN(val)) {
+       const sanitized = Math.max(0, val);
+       if (isEditMode) {
+         setToday((p) => ({ ...p, sleepHr: +sanitized.toFixed(2) }));
+       } else if (sanitized > 0) {
+         setToday((p) => ({ ...p, sleepHr: +(p.sleepHr + sanitized).toFixed(2) }));
+       }
+     }
      closeModal();
      return;
    }
@@ -964,16 +1194,25 @@ const parseFractionOrNumber = (s) => {
 
    if (modal.type === 'electrolyte') {
      if (electrolyteMode === 'single') {
-       if (!Number.isNaN(val) && val > 0) {
-         setToday((p) => {
-           const next = {
-             ...p.electrolytes,
-             [electrolyteKey]: p.electrolytes[electrolyteKey] + Math.round(val),
-           };
-           return { ...p, electrolytes: next, electrolyteLogged: true };
-         });
+       if (!Number.isNaN(val)) {
+         const addition = Math.max(0, Math.round(val));
+         if (isEditMode || addition > 0) {
+           setToday((p) => {
+             const next = {
+               ...p.electrolytes,
+               [electrolyteKey]: isEditMode
+                 ? addition
+                 : (p.electrolytes[electrolyteKey] || 0) + addition,
+             };
+             return {
+               ...p,
+               electrolytes: next,
+               electrolyteLogged: isEditMode ? hasElectrolyteIntake(next) : true,
+             };
+           });
+         }
        }
-     } else {
+     } else if (!isEditMode) {
        // batch mode
        const keys = Object.keys(batchElectrolytes);
        const additions = {};
@@ -1000,39 +1239,53 @@ const parseFractionOrNumber = (s) => {
    }
 
 
-   if (modal.type === 'workout') {
-     let session = null;
-     const id = new Date().toISOString();
+  if (modal.type === 'workout') {
+    const id = new Date().toISOString();
+    let session = null;
 
+    if (workoutInputMode === 'standard') {
+      session = buildStandardSession(id);
+    } else {
+      if (workoutType === 'strength') {
+        const sets = Array.from({ length: Math.max(0, Number(numSets) || 0) }).map((_, i) => {
+          const s = setsDetail[i] || {};
+          const effort = s.effort || 'before_failure';
+          const rir =
+            effort === 'before_failure'
+              ? Math.max(0, Math.min(5, Number(s.rir) || 0))
+              : undefined;
+          return { idx: i + 1, effort, ...(rir !== undefined ? { rir } : {}) };
+        });
+        session = { id, type: 'strength', strength: { sets } };
+      } else if (workoutType === 'running_steady') {
+        const minutes = Math.max(0, Number(runMinutes) || 0);
+        const perceived = Math.max(1, Math.min(10, Number(runPerceived) || 1));
+        session = { id, type: 'running_steady', running_steady: { minutes, perceived } };
+      } else if (workoutType === 'running_sprint') {
+        const distance_m = Math.max(0, Number(sprintDistance) || 0);
+        const perceivedPct = Math.max(0, Math.min(100, Number(sprintPerceived) || 0));
+        session = { id, type: 'running_sprint', running_sprint: { distance_m, perceivedPct } };
+      }
+    }
 
-     if (workoutType === 'strength') {
-       const sets = Array.from({ length: Math.max(0, Number(numSets) || 0) }).map((_, i) => {
-         const s = setsDetail[i] || {};
-         const effort = s.effort || 'before_failure';
-         const rir =
-           effort === 'before_failure'
-             ? Math.max(0, Math.min(5, Number(s.rir) || 0))
-             : undefined;
-         return { idx: i + 1, effort, ...(rir !== undefined ? { rir } : {}) };
-       });
-       session = { id, type: 'strength', strength: { sets } };
-     } else if (workoutType === 'running_steady') {
-       const minutes = Math.max(0, Number(runMinutes) || 0);
-       const perceived = Math.max(1, Math.min(10, Number(runPerceived) || 1));
-       session = { id, type: 'running_steady', running_steady: { minutes, perceived } };
-     } else if (workoutType === 'running_sprint') {
-       const distance_m = Math.max(0, Number(sprintDistance) || 0);
-       const perceivedPct = Math.max(0, Math.min(100, Number(sprintPerceived) || 0));
-       session = { id, type: 'running_sprint', running_sprint: { distance_m, perceivedPct } };
-     }
-
-
-     if (session) {
-       setToday((p) => ({ ...p, workoutSessions: [...p.workoutSessions, session] }));
-     }
-     closeModal();
-     return;
-   }
+    if (session) {
+      const nextMeta =
+        workoutInputMode === 'standard'
+          ? { ...(session.meta || {}), recordedAt: id }
+          : {
+              ...(session.meta || {}),
+              recordedAt: id,
+              mode: 'advanced',
+              workoutType: workoutType || session.type,
+            };
+      setToday((p) => ({
+        ...p,
+        workoutSessions: [...p.workoutSessions, { ...session, meta: nextMeta }],
+      }));
+    }
+    closeModal();
+    return;
+  }
  };
 
 
@@ -1052,17 +1305,22 @@ const parseFractionOrNumber = (s) => {
  );
 
 
- // Home progress
- const waterProgressPct = Math.round(clamp01((today.waterMl || 0) / (goals.waterMl || 1)) * 100);
- const sleepProgressPct = Math.round(clamp01((today.sleepHr || 0) / (goals.sleepHr || 1)) * 100);
- const workoutProgressPct = Math.round(
-   clamp01((today.workoutSessions.length || 0) / (goals.workout || 1)) * 100
- );
- const electrolyteProgressPct = electrolytePct; // direct %
+// Home progress
+const todaysSessions = Array.isArray(today.workoutSessions) ? today.workoutSessions : [];
+const waterProgressPct = Math.round(clamp01((today.waterMl || 0) / (goals.waterMl || 1)) * 100);
+const sleepProgressPct = Math.round(clamp01((today.sleepHr || 0) / (goals.sleepHr || 1)) * 100);
+const workoutProgressPct = Math.round(
+  clamp01((todaysSessions.length || 0) / (goals.workout || 1)) * 100
+);
+const electrolyteProgressPct = electrolytePct; // direct %
 
 
 // Collective readiness (uses Effective Hydration)
 const readinessPct = Math.round(avg([sleepPct, effectiveHydrationPct, workoutPct]));
+const consistencyStreak = useMemo(
+  () => computeConsistencyStreak(history, today, goals),
+  [history, today, goals]
+);
 
 const FancyBackground = React.memo(() => {
   const { mode } = useThemeContext();
@@ -1235,40 +1493,63 @@ const RevealView = ({ delay = 0, children, travel = 18 }) => {
            label="Log electrolytes"
            onPress={() => openModal('electrolyte')}
          />
-       </View>
+     </View>
      </RevealView>
 
+    {consistencyStreak > 0 && (
+      <RevealView delay={220}>
+        <View style={styles.statusChipRow}>
+          <StatusChip
+            label="Consistency streak"
+            value={`${consistencyStreak} day${consistencyStreak === 1 ? '' : 's'}`}
+            icon={<Ionicons name="flame" size={16} color="#fb923c" />}
+            accent="#fb923c"
+          />
+        </View>
+      </RevealView>
+    )}
+
      <RevealView delay={260}>
-       <ProgressCard
-         label="Water"
-         valueText={`${today.waterMl} / ${goals.waterMl} mL`}
-         pct={waterProgressPct}
-         color={WATER}
-       />
+     <ProgressCard
+       label="Water"
+       valueText={`${today.waterMl} / ${goals.waterMl} mL`}
+       pct={waterProgressPct}
+       color={WATER}
+        onEdit={() => openModal('water', { mode: 'edit', initialValue: today.waterMl || 0 })}
+      />
      </RevealView>
      <RevealView delay={320}>
-       <ProgressCard
-         label="Electrolytes"
-         valueText={`${electrolytePct}% balance`}
-         pct={electrolyteProgressPct}
-         color={ELECTROLYTE}
-       />
+     <ProgressCard
+       label="Electrolytes"
+       valueText={`${electrolytePct}% balance`}
+       pct={electrolyteProgressPct}
+       color={ELECTROLYTE}
+        onEdit={() =>
+          openModal('electrolyte', {
+            mode: 'edit',
+            initialKey: 'sodium',
+            initialValue: today.electrolytes?.sodium || 0,
+          })
+        }
+      />
      </RevealView>
      <RevealView delay={380}>
-       <ProgressCard
-         label="Sleep"
-         valueText={`${today.sleepHr} / ${goals.sleepHr} hr`}
-         pct={sleepProgressPct}
-         color={SLEEP}
-       />
+     <ProgressCard
+       label="Sleep"
+       valueText={`${today.sleepHr} / ${goals.sleepHr} hr`}
+       pct={sleepProgressPct}
+       color={SLEEP}
+        onEdit={() => openModal('sleep', { mode: 'edit', initialValue: today.sleepHr || 0 })}
+      />
      </RevealView>
      <RevealView delay={440}>
-       <ProgressCard
-         label="Workouts"
-         valueText={`${today.workoutSessions.length} / ${goals.workout}`}
-         pct={workoutProgressPct}
-         color={WORKOUT}
-       />
+      <ProgressCard
+        label="Workouts"
+        valueText={`${todaysSessions.length} / ${goals.workout}`}
+        pct={workoutProgressPct}
+        color={WORKOUT}
+        onEdit={() => openModal('workout', { mode: 'edit' })}
+      />
      </RevealView>
    </AnimatedScrollView>
  );
@@ -1320,6 +1601,59 @@ const Analyze = () => {
 
   const lineColor = view === 'sleep' ? SLEEP : view === 'workouts' ? WORKOUT : WATER;
   const isSeriesEmpty = series.length === 0;
+  const hasWaterEntries = view === 'water' && values.some((v) => (v || 0) > 0);
+  const sleepGoal = goals.sleepHr || defaultGoals.sleepHr;
+  const sleepRecommendation =
+    view === 'sleep' && values.length
+      ? (() => {
+          const avgSleepHours = avg(values);
+          if (avgSleepHours === 0) {
+            return '⚠️ No sleep tracked for this window — log tonight’s routine to see trends.';
+          }
+          if (avgSleepHours < sleepGoal * 0.75) {
+            return `⚠️ Sleep debt climbing: averaging ${avgSleepHours.toFixed(1)}h vs goal ${sleepGoal}h. Prioritize wind-down time.`;
+          }
+          if (avgSleepHours < sleepGoal) {
+            return `🌓 Close to target: averaging ${avgSleepHours.toFixed(1)}h of ${sleepGoal}h. Add 20–30 mins of rest to lock it in.`;
+          }
+          return '✅ Sleep goal met — keep the same bedtime window to stay consistent.';
+        })()
+      : null;
+  const workoutRecommendation =
+    view === 'workouts' && values.length
+      ? (() => {
+          const avgLoad = avg(values);
+          const peakLoad = Math.max(...values);
+          const latestLoad = values[values.length - 1];
+          if (avgLoad === 0 && peakLoad === 0) {
+            return '⚠️ No workouts logged yet this period — schedule a movement session.';
+          }
+          const overtrainingThreshold = 650;
+          if (peakLoad >= overtrainingThreshold || latestLoad >= overtrainingThreshold) {
+            return '⚠️ Training load is spiking — you might be overreaching. Dial back intensity or add recovery.';
+          }
+          if (avgLoad < 150) {
+            return '⚠️ Workouts are very light — add intensity or duration to build capacity.';
+          }
+          if (avgLoad >= 150 && avgLoad < 250) {
+            return '↗️ Volume is building — add one more focused set or increase tempo to keep progressing.';
+          }
+          if (avgLoad > 500) {
+            return '⚠️ Load is high but below redline — stack recovery habits so it stays sustainable.';
+          }
+          return '✅ Training load is in a healthy range — keep stacking consistent sessions.';
+        })()
+      : null;
+  const hydrationRecommendation =
+    view === 'water' && hasWaterEntries
+      ? electrolyteScoreDisplay >= 70
+        ? '✅ Hydration strong: Electrolytes are balanced.'
+        : '⚠️ Hydration incomplete: Water logged, but electrolytes may be low — risk of cramping.'
+      : null;
+  const hydrationPrompt =
+    view === 'water' && !hasWaterEntries
+      ? 'Log your water first to unlock electrolyte coaching.'
+      : null;
 
 
    return (
@@ -1415,38 +1749,49 @@ const Analyze = () => {
            </RevealView>
 
 
+           <RevealView delay={120}>
+             <LineChartView
+               labels={labels}
+               values={values}
+               unit={view === 'sleep' ? 'h' : view === 'water' ? 'mL' : ''}
+               color={lineColor}
+             />
+           </RevealView>
+
            {isSeriesEmpty ? (
-             <RevealView delay={120}>
+             <RevealView delay={180}>
                <Text style={styles.emptyStateText}>Log your first {view} entry to unlock trends.</Text>
              </RevealView>
            ) : (
              <>
-               <RevealView delay={120}>
-                 <LineChartView
-                   labels={labels}
-                   values={values}
-                   unit={view === 'sleep' ? 'h' : view === 'water' ? 'mL' : ''}
-                   color={lineColor}
-                 />
-               </RevealView>
-
                {insight && (
                  <RevealView delay={200}>
                    <Text style={styles.insight}>{insight}</Text>
                  </RevealView>
                )}
 
-               {view === 'water' && (
-                 <RevealView delay={240}>
-                   <Text style={styles.insight}>
-                     {electrolyteScoreDisplay >= 70
-                       ? '✅ Hydration strong: Electrolytes are balanced.'
-                       : '⚠️ Hydration incomplete: Water logged, but electrolytes may be low — risk of cramping.'}
-                   </Text>
-                 </RevealView>
-               )}
-             </>
-           )}
+              {hydrationRecommendation && (
+                <RevealView delay={240}>
+                  <Text style={styles.insight}>{hydrationRecommendation}</Text>
+                </RevealView>
+              )}
+              {hydrationPrompt && (
+                <RevealView delay={240}>
+                  <Text style={styles.insight}>{hydrationPrompt}</Text>
+                </RevealView>
+              )}
+              {sleepRecommendation && (
+                <RevealView delay={260}>
+                  <Text style={styles.insight}>{sleepRecommendation}</Text>
+                </RevealView>
+              )}
+              {workoutRecommendation && (
+                <RevealView delay={260}>
+                  <Text style={styles.insight}>{workoutRecommendation}</Text>
+                </RevealView>
+              )}
+            </>
+          )}
 
 
            <RevealView delay={320}>
@@ -1492,11 +1837,16 @@ const Analyze = () => {
 
   const ReminderRow = ({ reminderKey }) => {
     const config = reminders[reminderKey] || defaultReminders[reminderKey];
+    const nextReminderLabel = useMemo(() => {
+      if (!config?.enabled) return 'Reminder off';
+      return describeNextReminder(config.time) || 'Next alert pending';
+    }, [config?.enabled, config?.time]);
     return (
       <View style={styles.reminderRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.reminderLabel}>{reminderLabels[reminderKey]}</Text>
           <Text style={styles.reminderSubLabel}>Daily notification</Text>
+          <Text style={styles.reminderMeta}>{nextReminderLabel}</Text>
         </View>
         <View style={styles.reminderTimeBox}>
           <TextInput
@@ -1877,6 +2227,18 @@ const updateRir = (i, rir) => {
 
 const isSelectedEffort = (i, key) => setsDetail[i]?.effort === key;
 
+const SIMPLE_WORKOUT_TEMPLATES = [
+  { key: 'strength_guided', label: 'Strength', hint: 'Full-body or split lifting' },
+  { key: 'cardio_steady', label: 'Cardio • steady', hint: 'Jog, bike, row or long walk' },
+  { key: 'hiit_sprints', label: 'HIIT / Sprints', hint: 'Intervals, hills, circuits' },
+];
+
+const SIMPLE_EFFORT_OPTIONS = [
+  { key: 'easy', label: 'Easy', hint: 'Comfortable pace' },
+  { key: 'moderate', label: 'Moderate', hint: 'Challenging but steady' },
+  { key: 'hard', label: 'Hard', hint: 'High effort' },
+];
+
 
 function WorkoutForm() {
  const { styles, colors } = useThemeContext();
@@ -2027,8 +2389,139 @@ function WorkoutForm() {
  );
 }
 
+function StandardWorkoutForm() {
+  const { styles, colors } = useThemeContext();
+  const quickDurations =
+    simpleWorkoutTemplate === 'hiit_sprints'
+      ? [10, 15, 20, 25]
+      : simpleWorkoutTemplate === 'cardio_steady'
+      ? [15, 30, 45, 60]
+      : [20, 30, 40, 50];
+
+  return (
+    <ScrollView style={{ maxHeight: 420 }}>
+      <Text style={styles.modalTitle}>Guided workout</Text>
+      <Text style={styles.modalSubtitle}>Tell us the vibe and we’ll handle the details.</Text>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ flexDirection: 'row', gap: 10, paddingVertical: 4 }}
+      >
+        {SIMPLE_WORKOUT_TEMPLATES.map((tpl) => (
+          <Pressable
+            key={tpl.key}
+            onPress={() => setSimpleWorkoutTemplate(tpl.key)}
+            style={[
+              styles.templateCard,
+              simpleWorkoutTemplate === tpl.key && styles.templateCardActive,
+            ]}
+          >
+            <Text style={styles.templateLabel}>{tpl.label}</Text>
+            <Text style={styles.templateHint}>{tpl.hint}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+
+      <View style={{ marginTop: 12 }}>
+        <Text style={{ color: colors.textPrimary, fontWeight: '700', marginBottom: 6 }}>
+          Duration (minutes)
+        </Text>
+        <View style={styles.inputBox}>
+          <TextInput
+            value={simpleDuration}
+            onChangeText={(t) => setSimpleDuration(t.replace(/[^0-9]/g, ''))}
+            keyboardType="numeric"
+            placeholder={
+              simpleWorkoutTemplate === 'cardio_steady'
+                ? '30'
+                : simpleWorkoutTemplate === 'hiit_sprints'
+                ? '20'
+                : '30'
+            }
+            placeholderTextColor="#6b7280"
+            style={styles.input}
+          />
+        </View>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+          {quickDurations.map((val) => (
+            <Pressable key={val} onPress={() => setSimpleDuration(String(val))} style={styles.pill}>
+              <Text style={styles.pillText}>{val} min</Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+
+      <View style={{ marginTop: 16 }}>
+        <Text style={{ color: colors.textPrimary, fontWeight: '700' }}>How intense?</Text>
+        <View style={styles.effortRow}>
+          {SIMPLE_EFFORT_OPTIONS.map((opt) => {
+            const active = simpleEffort === opt.key;
+            return (
+              <Pressable
+                key={opt.key}
+                onPress={() => setSimpleEffort(opt.key)}
+                style={[styles.effortChip, active && styles.effortChipActive]}
+              >
+                <Text style={[styles.effortChipText, active && styles.effortChipTextActive]}>
+                  {opt.label}
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11 }}>{opt.hint}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      <View style={{ marginTop: 16 }}>
+        <Text style={{ color: colors.textPrimary, fontWeight: '700', marginBottom: 6 }}>
+          Notes (optional)
+        </Text>
+        <View style={[styles.inputBox, { minHeight: 80 }]}>
+          <TextInput
+            value={simpleNotes}
+            onChangeText={setSimpleNotes}
+            multiline
+            placeholder="What did you focus on today?"
+            placeholderTextColor="#6b7280"
+            style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]}
+          />
+        </View>
+      </View>
+    </ScrollView>
+  );
+}
+
  const isLoading =
    !authReady || dataLoading || (firebaseUser && !dataLoaded);
+
+const isModalEditMode = modal.mode === 'edit';
+const modalTitleText = (() => {
+   if (!modal.type) return '';
+   if (modal.type === 'water') {
+     const suffix = waterLogMode === 'ml' ? '(mL)' : '(Bottles)';
+     return `${isModalEditMode ? 'Set water total' : 'Add water'} ${suffix}`;
+   }
+   if (modal.type === 'sleep') {
+     return isModalEditMode ? 'Set sleep total (hr)' : 'Add sleep (hr)';
+   }
+   if (modal.type === 'workout') {
+     return isModalEditMode ? 'Adjust workouts' : 'Log workout';
+   }
+   if (modal.type === 'electrolyte') {
+     if (!isModalEditMode && electrolyteMode === 'batch') return 'Add electrolytes (batch)';
+     return isModalEditMode ? 'Set electrolyte totals' : 'Add electrolyte (single)';
+   }
+  return '';
+})();
+const modalPrimaryBtnText = isModalEditMode ? 'Save' : 'Add';
+const editModeHints = {
+  water: 'Enter the total amount of water you want recorded for today. This replaces any earlier log.',
+  sleep: 'Enter the actual hours slept so the total reflects your day.',
+  electrolyte: 'Pick a mineral and set the number of milligrams that should be saved for today.',
+  workout: 'Remove any sessions logged by mistake, then add the corrected workout if needed.',
+};
+const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
 
  if (isLoading) {
    return (
@@ -2146,13 +2639,12 @@ function WorkoutForm() {
               behavior={Platform.OS === 'ios' ? 'padding' : undefined}
               style={styles.modalCard}
             >
-            <Text style={styles.modalTitle}>
-              {modal.type === 'water' && (waterLogMode === 'ml' ? 'Add water (mL)' : 'Add water (Bottles)')}
-              {modal.type === 'sleep' && 'Add sleep (hr)'}
-              {modal.type === 'workout' && 'Log workout'}
-              {modal.type === 'electrolyte' &&
-                (electrolyteMode === 'single' ? 'Add electrolyte (single)' : 'Add electrolytes (batch)')}
-            </Text>
+            <Text style={styles.modalTitle}>{modalTitleText}</Text>
+            {modalEditHint ? (
+              <View style={styles.modalInfoBox}>
+                <Text style={styles.modalInfoText}>{modalEditHint}</Text>
+              </View>
+            ) : null}
 
 
            {/* WATER: mode switch */}
@@ -2165,12 +2657,15 @@ function WorkoutForm() {
                <Text style={{ color: themeColors.textMuted, marginBottom: 6 }}>
                  Bottle size: {goals.waterBottleMl || 0} mL
                </Text>
+                {isModalEditMode && (
+                  <Text style={styles.modalHint}>Currently logged: {today.waterMl} mL</Text>
+                )}
              </>
            )}
 
 
            {/* ELECTROLYTES: mode switch */}
-           {modal.type === 'electrolyte' && (
+           {modal.type === 'electrolyte' && !isModalEditMode && (
              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
                <SegBtn text="Single" active={electrolyteMode === 'single'} onPress={() => { setElectrolyteMode('single'); setInputValue(''); }} />
                <SegBtn text="Batch" active={electrolyteMode === 'batch'} onPress={() => setElectrolyteMode('batch')} />
@@ -2178,9 +2673,60 @@ function WorkoutForm() {
            )}
 
 
+           {modal.type === 'workout' && (
+             <>
+               <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
+                 <SegBtn
+                   text="Standard"
+                   active={workoutInputMode === 'standard'}
+                   onPress={() => setWorkoutInputMode('standard')}
+                 />
+                 <SegBtn
+                   text="Advanced"
+                   active={workoutInputMode === 'advanced'}
+                   onPress={() => setWorkoutInputMode('advanced')}
+                 />
+               </View>
+               <Text style={styles.modalSubtitle}>
+                 {workoutInputMode === 'standard'
+                   ? 'Quick templates with duration + effort hints.'
+                   : 'Full control over sets, intervals, and intensity.'}
+               </Text>
+             </>
+           )}
+
+           {modal.type === 'workout' && isModalEditMode && (
+             <View style={styles.manageBox}>
+               <Text style={styles.manageHeading}>Logged today</Text>
+               {todaysSessions.length === 0 ? (
+                 <Text style={styles.manageEmptyText}>No workouts logged yet.</Text>
+               ) : (
+                 <ScrollView style={styles.manageList} showsVerticalScrollIndicator={false}>
+                   {todaysSessions.map((session) => (
+                     <View key={session.id} style={styles.manageRow}>
+                       <View style={styles.manageCopy}>
+                         <Text style={styles.manageLabel}>{describeWorkoutSummary(session)}</Text>
+                         <Text style={styles.manageMeta}>
+                           {describeWorkoutMeta(session) || 'Logged session'}
+                         </Text>
+                       </View>
+                       <Pressable
+                         onPress={() => removeWorkoutSession(session.id)}
+                         style={styles.manageRemoveBtn}
+                         hitSlop={8}
+                       >
+                         <Text style={styles.manageRemoveText}>Remove</Text>
+                       </Pressable>
+                     </View>
+                   ))}
+                 </ScrollView>
+               )}
+             </View>
+           )}
+
+
            {modal.type === 'workout' ? (
-            
-             <WorkoutForm />
+             workoutInputMode === 'standard' ? <StandardWorkoutForm /> : <WorkoutForm />
            ) : modal.type === 'electrolyte' && electrolyteMode === 'batch' ? (
              <>
                {/* PRESETS ROW */}
@@ -2234,13 +2780,21 @@ function WorkoutForm() {
                  Tip: tap a packet above to auto-fill, then edit any amounts before saving.
                </Text>
              </>
-           ) : (
-             <>
-               {/* Single electrolyte input, or water/sleep default input */}
-               {modal.type === 'electrolyte' && electrolyteMode === 'single' && (
-                 <ElectrolytePicker selected={electrolyteKey} onSelect={setElectrolyteKey} />
-               )}
-               <View style={styles.inputBox}>
+            ) : (
+              <>
+                {/* Single electrolyte input, or water/sleep default input */}
+                {modal.type === 'electrolyte' && electrolyteMode === 'single' && (
+                  <ElectrolytePicker selected={electrolyteKey} onSelect={setElectrolyteKey} />
+                )}
+                {isModalEditMode && modal.type === 'electrolyte' && electrolyteMode === 'single' && (
+                  <Text style={styles.modalHint}>
+                    {`Currently logged for ${electrolyteKey}: ${today?.electrolytes?.[electrolyteKey] || 0} mg`}
+                  </Text>
+                )}
+                {isModalEditMode && modal.type === 'sleep' && (
+                  <Text style={styles.modalHint}>Currently logged: {today.sleepHr} hr</Text>
+                )}
+                <View style={styles.inputBox}>
                  <TextInput
                    value={inputValue}
                    onChangeText={setInputValue}
@@ -2296,12 +2850,12 @@ function WorkoutForm() {
 
            <View style={styles.modalActions}>
              <Pressable onPress={closeModal} style={[styles.modalBtn, styles.btnGhost]}>
-               <Text style={styles.btnGhostText}>Cancel</Text>
-             </Pressable>
-             <Pressable onPress={addEntry} style={styles.modalBtn}>
-               <Text style={styles.modalBtnText}>Add</Text>
-             </Pressable>
-           </View>
+             <Text style={styles.btnGhostText}>Cancel</Text>
+            </Pressable>
+            <Pressable onPress={addEntry} style={styles.modalBtn}>
+              <Text style={styles.modalBtnText}>{modalPrimaryBtnText}</Text>
+            </Pressable>
+          </View>
          </KeyboardAvoidingView>
           </View>
         </Modal>
@@ -2339,24 +2893,29 @@ const Bars = ({ data }) => {
 };
 
 
-const LineChartView = ({ labels, values, unit, color = BLUE }) => {
+const LineChartView = ({ labels = [], values = [], unit, color = BLUE }) => {
  const { styles } = useThemeContext();
  const width = Dimensions.get('window').width - 32;
  const height = 200;
  const pad = 16;
+ const hasValues = Array.isArray(values) && values.length > 0;
+ const placeholderSparkline = [20, 45, 30, 60, 40, 65];
+ const data = hasValues ? values : placeholderSparkline;
+ const lineColor = hasValues ? color : 'rgba(148,163,184,0.55)';
+ const dotBorder = hasValues ? color : 'rgba(148,163,184,0.8)';
+ const dotFill = hasValues ? WHITE : 'rgba(148,163,184,0.18)';
+ const safeLabels =
+   hasValues && labels.length ? labels : Array.from({ length: data.length }, () => '');
 
-
- const min = Math.min(...values, 0);
- const max = Math.max(...values, 1);
+ const min = Math.min(...data, 0);
+ const max = Math.max(...data, 1);
  const range = max - min || 1;
 
-
- const pts = values.map((v, i) => {
-   const x = pad + (i * (width - pad * 2)) / Math.max(1, values.length - 1);
+ const pts = data.map((v, i) => {
+   const x = pad + (i * (width - pad * 2)) / Math.max(1, data.length - 1);
    const y = pad + (height - pad * 2) * (1 - (v - min) / range);
    return { x, y };
  });
-
 
  return (
    <View style={[styles.card, { padding: 12 }]}>
@@ -2379,26 +2938,44 @@ const LineChartView = ({ labels, values, unit, color = BLUE }) => {
                left: p0.x,
                top: p0.y,
                width: len,
-               height: 2,
-               backgroundColor: color,
+               height: hasValues ? 2 : 0,
+               borderRadius: 1,
+               backgroundColor: hasValues ? lineColor : 'transparent',
+               borderTopWidth: hasValues ? 0 : 1,
+               borderColor: hasValues ? 'transparent' : lineColor,
+               borderStyle: hasValues ? 'solid' : 'dashed',
+               opacity: hasValues ? 1 : 0.8,
                transform: [{ rotateZ: `${angle}deg` }],
                transformOrigin: 'left center',
-               borderRadius: 1,
              }}
            />
          );
        })}
        {pts.map((p, i) => (
-         <View key={`pt-${i}`} style={[styles.dot, { left: p.x - 4, top: p.y - 4, borderColor: color }]} />
+         <View
+           key={`pt-${i}`}
+           style={[
+             styles.dot,
+             {
+               left: p.x - 4,
+               top: p.y - 4,
+               borderColor: dotBorder,
+               backgroundColor: dotFill,
+             },
+           ]}
+         />
        ))}
      </View>
      <View style={styles.xLabels}>
-       {labels.map((t, i) => (
+       {safeLabels.map((t, i) => (
          <Text key={`lbl-${i}`} style={styles.xLabelText}>
            {t}
          </Text>
        ))}
      </View>
+     {!hasValues && (
+       <Text style={styles.placeholderCaption}>Placeholder trend — log entries to unlock real data.</Text>
+     )}
    </View>
  );
 };
@@ -2695,6 +3272,34 @@ const styles = StyleSheet.create({
    elevation: 6,
  },
  quickText: { color: WHITE, fontWeight: '800', letterSpacing: 0.2 },
+ statusChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 12 },
+ statusChip: {
+   flexDirection: 'row',
+   alignItems: 'center',
+   borderWidth: 1,
+   borderColor: 'rgba(147,197,253,0.35)',
+   borderRadius: 14,
+   paddingVertical: 10,
+   paddingHorizontal: 12,
+   backgroundColor: 'rgba(15,23,42,0.88)',
+   flex: 1,
+   minWidth: '48%',
+   gap: 10,
+   shadowColor: 'rgba(37,99,235,0.25)',
+   shadowOpacity: 0.25,
+   shadowRadius: 12,
+   shadowOffset: { width: 0, height: 6 },
+   elevation: 4,
+ },
+ statusChipIcon: {
+   width: 32,
+   height: 32,
+   borderRadius: 16,
+   alignItems: 'center',
+   justifyContent: 'center',
+ },
+ statusChipLabel: { color: TEXT_MUTED, fontSize: 10, letterSpacing: 1, textTransform: 'uppercase' },
+ statusChipValue: { color: WHITE, fontSize: 16, fontWeight: '800', marginTop: 2 },
 
  analysisCard: {
    backgroundColor: 'rgba(12,18,32,0.92)',
@@ -2730,6 +3335,19 @@ const styles = StyleSheet.create({
    elevation: 7,
  },
  cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+ cardHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+ cardEditBtn: {
+   flexDirection: 'row',
+   alignItems: 'center',
+   gap: 4,
+   paddingHorizontal: 8,
+   paddingVertical: 4,
+   borderRadius: 999,
+   borderWidth: 1,
+   borderColor: 'rgba(148,163,184,0.4)',
+   backgroundColor: 'rgba(15,23,42,0.35)',
+ },
+ cardEditText: { color: '#93c5fd', fontSize: 12, fontWeight: '700' },
  cardTitle: { color: WHITE, fontSize: 16, fontWeight: '700' },
  cardValue: { color: TEXT_MUTED, fontSize: 14 },
 
@@ -2737,6 +3355,7 @@ const styles = StyleSheet.create({
  reminderRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
  reminderLabel: { color: WHITE, fontWeight: '700' },
  reminderSubLabel: { color: TEXT_MUTED, fontSize: 11 },
+ reminderMeta: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
  reminderTimeBox: { width: 72, backgroundColor: '#0b0f1a', borderRadius: 10, borderWidth: 1, borderColor: BORDER, paddingVertical: 6, paddingHorizontal: 10 },
  reminderTimeInput: { color: WHITE, fontSize: 16, textAlign: 'center' },
  calendarHeader: {
@@ -2868,6 +3487,7 @@ const styles = StyleSheet.create({
  dot: { position: 'absolute', width: 8, height: 8, borderRadius: 4, backgroundColor: WHITE, borderWidth: 2 },
  xLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
  xLabelText: { color: '#6b7280', fontSize: 11 },
+ placeholderCaption: { color: '#94a3b8', fontSize: 11, textAlign: 'center', marginTop: 6 },
 
 
  tabRow: {
@@ -2944,11 +3564,80 @@ const styles = StyleSheet.create({
    elevation: 12,
  },
  modalTitle: { color: WHITE, fontSize: 18, fontWeight: '800', marginBottom: 10 },
- modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 12 },
- modalBtn: { backgroundColor: BLUE, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
- modalBtnText: { color: WHITE, fontWeight: '700' },
+ modalSubtitle: { color: TEXT_MUTED, fontSize: 13, marginBottom: 12 },
+  modalInfoBox: {
+    backgroundColor: 'rgba(148,163,184,0.12)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.25)',
+    padding: 10,
+    marginBottom: 10,
+  },
+  modalInfoText: { color: TEXT_MUTED, fontSize: 12, lineHeight: 16 },
+  modalHint: { color: TEXT_MUTED, fontSize: 12, marginBottom: 8 },
+  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 12 },
+  modalBtn: { backgroundColor: BLUE, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
+  modalBtnText: { color: WHITE, fontWeight: '700' },
  btnGhost: { backgroundColor: 'transparent', borderWidth: 1, borderColor: 'rgba(148,163,184,0.4)' },
  btnGhostText: { color: '#e0e7ff', fontWeight: '700' },
+ templateCards: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+ templateCard: {
+   minWidth: 150,
+   borderWidth: 1,
+   borderColor: BORDER,
+   borderRadius: 14,
+   padding: 12,
+   backgroundColor: '#0b0f1a',
+ },
+ templateCardActive: {
+   borderColor: BLUE,
+   backgroundColor: 'rgba(37,99,235,0.18)',
+ },
+ templateLabel: { color: WHITE, fontSize: 15, fontWeight: '700' },
+ templateHint: { color: TEXT_MUTED, fontSize: 12, marginTop: 2 },
+ effortRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+ effortChip: {
+   borderRadius: 999,
+   borderWidth: 1,
+   borderColor: BORDER,
+   paddingVertical: 8,
+   paddingHorizontal: 14,
+   backgroundColor: '#0b0f1a',
+ },
+ effortChipActive: { borderColor: BLUE, backgroundColor: 'rgba(37,99,235,0.2)' },
+ effortChipText: { color: WHITE, fontWeight: '600' },
+ effortChipTextActive: { color: WHITE },
+
+  manageBox: {
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: 'rgba(2,6,23,0.4)',
+  },
+  manageHeading: { color: WHITE, fontWeight: '700', marginBottom: 8 },
+  manageEmptyText: { color: TEXT_MUTED, fontSize: 12 },
+  manageList: { maxHeight: 220 },
+  manageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    gap: 12,
+  },
+  manageCopy: { flex: 1 },
+  manageLabel: { color: WHITE, fontWeight: '700' },
+  manageMeta: { color: TEXT_MUTED, fontSize: 12, marginTop: 2 },
+  manageRemoveBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#4c0519',
+    backgroundColor: 'rgba(239,68,68,0.12)',
+  },
+  manageRemoveText: { color: '#f87171', fontWeight: '700', fontSize: 12 },
 
 
  packetRow: {
@@ -2976,6 +3665,9 @@ const lightOverrides = StyleSheet.create({
   screen: { backgroundColor: '#f8fafc' },
   loadingScreen: { backgroundColor: '#f8fafc' },
   loadingText: { color: '#475569' },
+  templateCard: { backgroundColor: '#fff', borderColor: 'rgba(15,23,42,0.12)' },
+  templateHint: { color: '#475569' },
+  effortChip: { backgroundColor: '#fff', borderColor: 'rgba(15,23,42,0.12)' },
   authScreen: { backgroundColor: '#f8fafc' },
   authCard: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
   authHeading: { color: '#0f172a' },
@@ -2999,9 +3691,17 @@ const lightOverrides = StyleSheet.create({
   card: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
   cardTitle: { color: '#0f172a' },
   cardValue: { color: '#475569' },
+  modalInfoBox: { backgroundColor: '#f8fafc', borderColor: '#e2e8f0' },
+  modalInfoText: { color: '#475569' },
+  modalHint: { color: '#475569' },
+  cardEditBtn: { backgroundColor: '#e2e8f0', borderColor: '#cbd5f5' },
+  cardEditText: { color: '#1d4ed8' },
+  statusChip: { backgroundColor: '#f1f5f9', borderColor: '#cbd5f5', shadowColor: 'rgba(15,23,42,0.12)' },
+  statusChipLabel: { color: '#475569' },
   reminderNote: { color: '#475569' },
   reminderLabel: { color: '#0f172a' },
   reminderSubLabel: { color: '#475569' },
+  reminderMeta: { color: '#64748b' },
   reminderTimeBox: { backgroundColor: '#f8fafc', borderColor: '#cbd5f5' },
   reminderTimeInput: { color: '#0f172a' },
   calendarHeaderText: { color: '#0f172a' },
@@ -3033,6 +3733,7 @@ const lightOverrides = StyleSheet.create({
   gridLine: { backgroundColor: '#e2e8f0' },
   dot: { backgroundColor: '#0f172a' },
   xLabelText: { color: '#94a3b8' },
+  placeholderCaption: { color: '#94a3b8' },
   tabRow: { backgroundColor: '#ffffff', borderTopColor: '#e2e8f0' },
   tabText: { color: '#475569' },
   tabTextActive: { color: '#1d4ed8' },
@@ -3048,6 +3749,13 @@ const lightOverrides = StyleSheet.create({
   packetRow: { borderTopColor: 'rgba(15,23,42,0.08)' },
   delBtn: { backgroundColor: '#f8fafc', borderColor: '#cbd5f5' },
   delBtnText: { color: '#b91c1c' },
+  manageBox: { backgroundColor: '#f8fafc', borderColor: '#e2e8f0' },
+  manageHeading: { color: '#0f172a' },
+  manageEmptyText: { color: '#475569' },
+  manageLabel: { color: '#0f172a' },
+  manageMeta: { color: '#64748b' },
+  manageRemoveBtn: { borderColor: '#fecaca', backgroundColor: '#fee2e2' },
+  manageRemoveText: { color: '#b91c1c' },
   signOutBtn: { borderColor: '#dc2626' },
   signOutText: { color: '#b91c1c' },
   themeOption: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
@@ -3130,10 +3838,27 @@ const QuickButton = ({ label, onPress, color, icon }) => {
 };
 
 
-const ProgressCard = ({ label, valueText, pct, color }) => {
+const StatusChip = ({ label, value, icon, accent = BLUE }) => {
+  const { styles } = useThemeContext();
+  const accentBg =
+    typeof accent === 'string' && accent.startsWith('#') ? `${accent}26` : 'rgba(59,130,246,0.16)';
+  return (
+    <View style={[styles.statusChip, { borderColor: accentBg, shadowColor: accentBg }]}>
+      <View style={[styles.statusChipIcon, { backgroundColor: accentBg }]}>{icon}</View>
+      <View>
+        <Text style={styles.statusChipLabel}>{label}</Text>
+        <Text style={[styles.statusChipValue, { color: accent }]}>{value}</Text>
+      </View>
+    </View>
+  );
+};
+
+
+const ProgressCard = ({ label, valueText, pct, color, onEdit }) => {
  const { styles } = useThemeContext();
  const bounded = Math.max(0, Math.min(100, pct));
  const progress = useRef(new Animated.Value(bounded)).current;
+ const pulse = useRef(new Animated.Value(1)).current;
 
  useEffect(() => {
    Animated.timing(progress, {
@@ -3141,25 +3866,48 @@ const ProgressCard = ({ label, valueText, pct, color }) => {
      duration: 480,
      easing: Easing.out(Easing.cubic),
      useNativeDriver: false,
-   }).start();
+  }).start();
  }, [bounded, progress]);
+
+ useEffect(() => {
+   pulse.setValue(0);
+   Animated.timing(pulse, {
+     toValue: 1,
+     duration: 380,
+     easing: Easing.out(Easing.cubic),
+     useNativeDriver: true,
+   }).start();
+ }, [bounded, pulse, valueText]);
 
  const width = progress.interpolate({
    inputRange: [0, 100],
    outputRange: ['0%', '100%'],
  });
 
+ const translateY = pulse.interpolate({
+   inputRange: [0, 1],
+   outputRange: [10, 0],
+ });
+
  return (
-   <View style={styles.card}>
+   <Animated.View style={[styles.card, { opacity: pulse, transform: [{ translateY }] }]}>
      <View style={styles.cardHeader}>
        <Text style={styles.cardTitle}>{label}</Text>
-       <Text style={styles.cardValue}>{valueText}</Text>
+       <View style={styles.cardHeaderRight}>
+         <Text style={styles.cardValue}>{valueText}</Text>
+         {onEdit ? (
+           <Pressable onPress={onEdit} style={styles.cardEditBtn} hitSlop={8}>
+             <Ionicons name="create-outline" size={14} color="#93c5fd" />
+             <Text style={styles.cardEditText}>Edit</Text>
+           </Pressable>
+         ) : null}
+       </View>
      </View>
      <View style={styles.progressTrack}>
        <Animated.View style={[styles.progressFill, { width, backgroundColor: color }]} />
      </View>
      <Text style={styles.progressCaption}>{bounded}% of goal</Text>
-   </View>
+   </Animated.View>
  );
 };
 
