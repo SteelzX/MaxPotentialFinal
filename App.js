@@ -59,6 +59,17 @@ const makeDefaultElectrolytes = () => ({
 
 const getTodayKey = () => new Date().toISOString().slice(0, 10);
 
+const formatDateLabel = (dateKey) => {
+  if (!dateKey) return 'today';
+  const date = new Date(dateKey);
+  if (Number.isNaN(date.getTime())) return dateKey;
+  return date.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+};
+
 const makeDefaultToday = (dateKey = getTodayKey()) => ({
  dateKey,
  waterMl: 0,
@@ -615,13 +626,17 @@ export default function App() {
    }
  }, []);
 
-  const removeWorkoutSession = useCallback((sessionId) => {
-    if (!sessionId) return;
-    setToday((prev) => ({
-      ...prev,
-      workoutSessions: prev.workoutSessions.filter((session) => session.id !== sessionId),
-    }));
-  }, []);
+  const removeWorkoutSession = useCallback(
+    (sessionId, dateKeyParam) => {
+      if (!sessionId) return;
+      const key = dateKeyParam || todayKey;
+      updateEntryForDate(key, (prev) => ({
+        ...prev,
+        workoutSessions: (prev.workoutSessions || []).filter((session) => session.id !== sessionId),
+      }));
+    },
+    [todayKey, updateEntryForDate]
+  );
 
   const buildDailyAnalysisPayload = useCallback(() => {
    if (!firebaseUser) return null;
@@ -679,8 +694,9 @@ export default function App() {
 
 
 // Log modal
-const [modal, setModal] = useState({ type: null, mode: 'add' }); // mode: 'add' | 'edit'
+const [modal, setModal] = useState({ type: null, mode: 'add', dateKey: getTodayKey() }); // mode: 'add' | 'edit'
 const [inputValue, setInputValue] = useState('');
+const [dayDetail, setDayDetail] = useState({ visible: false, dateKey: null });
 
 
  // WATER: mL vs Bottle modes
@@ -702,18 +718,6 @@ const [inputValue, setInputValue] = useState('');
 const [batchElectrolytes, setBatchElectrolytes] = useState(emptyBatch);
 
 
-useEffect(() => {
-  if (modal.type !== 'electrolyte' || modal.mode !== 'edit') return;
-  if (electrolyteMode !== 'single') return;
-  const current = today.electrolytes?.[electrolyteKey];
-  if (current == null) {
-    setInputValue('0');
-    return;
-  }
-  setInputValue(String(current));
-}, [modal.type, modal.mode, electrolyteMode, electrolyteKey, today.electrolytes]);
-
-
 // Workout form state
 const [workoutType, setWorkoutType] = useState(null); // 'strength' | 'running_steady' | 'running_sprint'
 const [numSets, setNumSets] = useState(0);
@@ -726,6 +730,80 @@ const [simpleWorkoutTemplate, setSimpleWorkoutTemplate] = useState('strength_gui
 const [simpleDuration, setSimpleDuration] = useState('');
 const [simpleEffort, setSimpleEffort] = useState('moderate'); // 'easy' | 'moderate' | 'hard'
 const [simpleNotes, setSimpleNotes] = useState('');
+
+const todayKey = today.dateKey || getTodayKey();
+
+const getEntryForDate = useCallback(
+  (dateKey) => {
+    const key = dateKey || todayKey;
+    if (key === todayKey) return today;
+    const entry = history.find((item) => item.id === key || item.dateKey === key);
+    if (entry) return entry;
+    return makeDefaultToday(key);
+  },
+  [today, todayKey, history]
+);
+
+const modalTargetEntry = useMemo(() => getEntryForDate(modal.dateKey), [modal.dateKey, getEntryForDate]);
+const modalWorkoutSessions = Array.isArray(modalTargetEntry.workoutSessions)
+  ? modalTargetEntry.workoutSessions
+  : [];
+
+const updateEntryForDate = useCallback(
+  (dateKey, updater) => {
+    const key = dateKey || todayKey;
+    const applyUpdate = (base) => {
+      const updated = updater(base);
+      if (!updated) return base;
+      const merged = { ...base, ...updated, dateKey: key };
+      if (merged.workoutSessions) {
+        merged.trainingLoad = computeDayTrainingLoad(merged.workoutSessions);
+      }
+      return merged;
+    };
+    if (key === todayKey) {
+      setToday((prev) => {
+        const base = prev || makeDefaultToday(key);
+        return applyUpdate(base);
+      });
+      return;
+    }
+    setHistory((prev) => {
+      const idx = prev.findIndex((entry) => entry.id === key);
+      const base = idx >= 0 ? prev[idx] : { ...makeDefaultToday(key), id: key };
+      const nextEntry = applyUpdate(base);
+      if (!nextEntry) return prev;
+      const normalized = { ...nextEntry, id: key, dateKey: key };
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = normalized;
+        return next;
+      }
+      return [...prev, normalized];
+    });
+  },
+  [todayKey, setToday, setHistory]
+);
+
+const openDayDetail = useCallback((dateKey) => {
+  if (!dateKey) return;
+  setDayDetail({ visible: true, dateKey });
+}, []);
+
+const closeDayDetail = useCallback(() => {
+  setDayDetail({ visible: false, dateKey: null });
+}, []);
+
+useEffect(() => {
+  if (modal.type !== 'electrolyte' || modal.mode !== 'edit') return;
+  if (electrolyteMode !== 'single') return;
+  const current = modalTargetEntry?.electrolytes?.[electrolyteKey];
+  if (current == null) {
+    setInputValue('0');
+    return;
+  }
+  setInputValue(String(current));
+}, [modal.type, modal.mode, electrolyteMode, electrolyteKey, modalTargetEntry]);
 
 const resetWorkoutFormState = () => {
   setWorkoutType(null);
@@ -743,6 +821,7 @@ const resetWorkoutFormState = () => {
 
  const openModal = (type, options = {}) => {
    const mode = options.mode || 'add';
+   const targetDateKey = options.dateKey || todayKey;
   if (type === 'workout') {
     resetWorkoutFormState();
   }
@@ -754,14 +833,26 @@ const resetWorkoutFormState = () => {
    }
    const presetValue =
      mode === 'edit' && options.initialValue != null ? String(options.initialValue) : '';
-   setInputValue(presetValue);
-   setModal({ type, mode });
+  setInputValue(presetValue);
+  setModal({ type, mode, dateKey: targetDateKey });
  };
  const closeModal = () => {
-   setModal({ type: null, mode: 'add' });
+   setModal({ type: null, mode: 'add', dateKey: todayKey });
    setInputValue('');
    resetWorkoutFormState();
-};
+ };
+
+ const handleDayMetricEdit = (type, extra = {}) => {
+   if (!dayDetail.dateKey) return;
+   closeDayDetail();
+   openModal(type, { ...extra, mode: 'edit', dateKey: dayDetail.dateKey });
+ };
+
+ const handleDayWorkoutAdd = () => {
+   if (!dayDetail.dateKey) return;
+   closeDayDetail();
+   openModal('workout', { dateKey: dayDetail.dateKey });
+ };
 
 
  // Helpers
@@ -1149,6 +1240,7 @@ const describeWorkoutMeta = (session) => {
  const addEntry = () => {
    const val = Number(inputValue);
    const isEditMode = modal.mode === 'edit';
+   const targetDateKey = modal.dateKey || todayKey;
 
 
    if (modal.type === 'water') {
@@ -1168,9 +1260,12 @@ const describeWorkoutMeta = (session) => {
      if (!Number.isNaN(mlAmount)) {
        const sanitized = Math.max(0, mlAmount);
        if (isEditMode) {
-         setToday((p) => ({ ...p, waterMl: sanitized }));
+         updateEntryForDate(targetDateKey, (prev) => ({ ...prev, waterMl: sanitized }));
        } else if (sanitized > 0) {
-         setToday((p) => ({ ...p, waterMl: p.waterMl + sanitized }));
+         updateEntryForDate(targetDateKey, (prev) => ({
+           ...prev,
+           waterMl: (prev.waterMl || 0) + sanitized,
+         }));
        }
      }
      closeModal();
@@ -1178,13 +1273,19 @@ const describeWorkoutMeta = (session) => {
    }
 
 
-   if (modal.type === 'sleep') {
+    if (modal.type === 'sleep') {
      if (!Number.isNaN(val)) {
        const sanitized = Math.max(0, val);
        if (isEditMode) {
-         setToday((p) => ({ ...p, sleepHr: +sanitized.toFixed(2) }));
+         updateEntryForDate(targetDateKey, (prev) => ({
+           ...prev,
+           sleepHr: +sanitized.toFixed(2),
+         }));
        } else if (sanitized > 0) {
-         setToday((p) => ({ ...p, sleepHr: +(p.sleepHr + sanitized).toFixed(2) }));
+         updateEntryForDate(targetDateKey, (prev) => ({
+           ...prev,
+           sleepHr: +(prev.sleepHr + sanitized).toFixed(2),
+         }));
        }
      }
      closeModal();
@@ -1192,20 +1293,21 @@ const describeWorkoutMeta = (session) => {
    }
 
 
-   if (modal.type === 'electrolyte') {
-     if (electrolyteMode === 'single') {
+    if (modal.type === 'electrolyte') {
+      if (electrolyteMode === 'single') {
        if (!Number.isNaN(val)) {
          const addition = Math.max(0, Math.round(val));
          if (isEditMode || addition > 0) {
-           setToday((p) => {
+           updateEntryForDate(targetDateKey, (prev) => {
+             const current = prev.electrolytes || makeDefaultElectrolytes();
              const next = {
-               ...p.electrolytes,
+               ...current,
                [electrolyteKey]: isEditMode
                  ? addition
-                 : (p.electrolytes[electrolyteKey] || 0) + addition,
+                 : (current[electrolyteKey] || 0) + addition,
              };
              return {
-               ...p,
+               ...prev,
                electrolytes: next,
                electrolyteLogged: isEditMode ? hasElectrolyteIntake(next) : true,
              };
@@ -1213,9 +1315,9 @@ const describeWorkoutMeta = (session) => {
          }
        }
      } else if (!isEditMode) {
-       // batch mode
-       const keys = Object.keys(batchElectrolytes);
-       const additions = {};
+        // batch mode
+        const keys = Object.keys(batchElectrolytes);
+        const additions = {};
        let any = false;
        keys.forEach((k) => {
          const inc = safePosInt(batchElectrolytes[k]);
@@ -1224,24 +1326,28 @@ const describeWorkoutMeta = (session) => {
            any = true;
          }
        });
-       if (any) {
-         setToday((p) => {
-           const next = { ...p.electrolytes };
-           Object.entries(additions).forEach(([k, inc]) => {
-             next[k] = (next[k] || 0) + inc;
-           });
-           return { ...p, electrolytes: next, electrolyteLogged: true };
-         });
-       }
-     }
-     closeModal();
-     return;
-   }
+        if (any) {
+          updateEntryForDate(targetDateKey, (prev) => {
+            const next = { ...(prev.electrolytes || makeDefaultElectrolytes()) };
+            Object.entries(additions).forEach(([k, inc]) => {
+              next[k] = (next[k] || 0) + inc;
+            });
+            return { ...prev, electrolytes: next, electrolyteLogged: true };
+          });
+        }
+      }
+      closeModal();
+      return;
+    }
 
 
-  if (modal.type === 'workout') {
-    const id = new Date().toISOString();
-    let session = null;
+   if (modal.type === 'workout') {
+      if (isEditMode) {
+        closeModal();
+        return;
+      }
+      const id = new Date().toISOString();
+      let session = null;
 
     if (workoutInputMode === 'standard') {
       session = buildStandardSession(id);
@@ -1278,9 +1384,9 @@ const describeWorkoutMeta = (session) => {
               mode: 'advanced',
               workoutType: workoutType || session.type,
             };
-      setToday((p) => ({
-        ...p,
-        workoutSessions: [...p.workoutSessions, { ...session, meta: nextMeta }],
+      updateEntryForDate(targetDateKey, (prev) => ({
+        ...prev,
+        workoutSessions: [...(prev.workoutSessions || []), { ...session, meta: nextMeta }],
       }));
     }
     closeModal();
@@ -1515,7 +1621,13 @@ const RevealView = ({ delay = 0, children, travel = 18 }) => {
        valueText={`${today.waterMl} / ${goals.waterMl} mL`}
        pct={waterProgressPct}
        color={WATER}
-        onEdit={() => openModal('water', { mode: 'edit', initialValue: today.waterMl || 0 })}
+        onEdit={() =>
+          openModal('water', {
+            mode: 'edit',
+            initialValue: today.waterMl || 0,
+            dateKey: todayKey,
+          })
+        }
       />
      </RevealView>
      <RevealView delay={320}>
@@ -1529,6 +1641,7 @@ const RevealView = ({ delay = 0, children, travel = 18 }) => {
             mode: 'edit',
             initialKey: 'sodium',
             initialValue: today.electrolytes?.sodium || 0,
+            dateKey: todayKey,
           })
         }
       />
@@ -1539,7 +1652,13 @@ const RevealView = ({ delay = 0, children, travel = 18 }) => {
        valueText={`${today.sleepHr} / ${goals.sleepHr} hr`}
        pct={sleepProgressPct}
        color={SLEEP}
-        onEdit={() => openModal('sleep', { mode: 'edit', initialValue: today.sleepHr || 0 })}
+        onEdit={() =>
+          openModal('sleep', {
+            mode: 'edit',
+            initialValue: today.sleepHr || 0,
+            dateKey: todayKey,
+          })
+        }
       />
      </RevealView>
      <RevealView delay={440}>
@@ -1548,7 +1667,7 @@ const RevealView = ({ delay = 0, children, travel = 18 }) => {
         valueText={`${todaysSessions.length} / ${goals.workout}`}
         pct={workoutProgressPct}
         color={WORKOUT}
-        onEdit={() => openModal('workout', { mode: 'edit' })}
+        onEdit={() => openModal('workout', { mode: 'edit', dateKey: todayKey })}
       />
      </RevealView>
    </AnimatedScrollView>
@@ -1632,14 +1751,14 @@ const Analyze = () => {
           if (peakLoad >= overtrainingThreshold || latestLoad >= overtrainingThreshold) {
             return '⚠️ Training load is spiking — you might be overreaching. Dial back intensity or add recovery.';
           }
-          if (avgLoad < 150) {
+          if (avgLoad >= 450 || latestLoad >= 500) {
+            return '🔥 Sessions are heavy — prioritize sleep, fueling, and deloads to avoid burnout.';
+          }
+          if (avgLoad < 150 && latestLoad < 200) {
             return '⚠️ Workouts are very light — add intensity or duration to build capacity.';
           }
-          if (avgLoad >= 150 && avgLoad < 250) {
+          if (avgLoad < 220 || latestLoad < 220) {
             return '↗️ Volume is building — add one more focused set or increase tempo to keep progressing.';
-          }
-          if (avgLoad > 500) {
-            return '⚠️ Load is high but below redline — stack recovery habits so it stays sustainable.';
           }
           return '✅ Training load is in a healthy range — keep stacking consistent sessions.';
         })()
@@ -2070,7 +2189,7 @@ const Legend = ({ color, label }) => {
   );
 };
 
-const Calendar = ({ history, today, goals }) => {
+const Calendar = ({ history, today, goals, onSelectDay }) => {
  const { styles } = useThemeContext();
  const [visibleMonth, setVisibleMonth] = useState(() => {
    const now = new Date();
@@ -2142,8 +2261,10 @@ const Calendar = ({ history, today, goals }) => {
            const textOnBadge =
              day.readiness != null && day.readiness >= 75 ? '#0f172a' : WHITE;
            return (
-             <View
+             <TouchableOpacity
                key={day.key}
+               onPress={() => onSelectDay?.(day.key)}
+               activeOpacity={0.9}
                style={[
                  styles.calendarCell,
                  !day.isCurrentMonth && styles.calendarCellMuted,
@@ -2165,12 +2286,12 @@ const Calendar = ({ history, today, goals }) => {
                      ? { backgroundColor }
                      : styles.calendarCellBadgeEmpty,
                  ]}
-               >
-                 <Text style={[styles.calendarCellBadgeText, { color: textOnBadge }]}>
+                >
+                  <Text style={[styles.calendarCellBadgeText, { color: textOnBadge }]}>
                    {day.readiness != null ? day.readiness : '-'}
                  </Text>
                </View>
-             </View>
+             </TouchableOpacity>
            );
          })}
        </View>
@@ -2497,7 +2618,7 @@ function StandardWorkoutForm() {
 
 const isModalEditMode = modal.mode === 'edit';
 const modalTitleText = (() => {
-   if (!modal.type) return '';
+  if (!modal.type) return '';
    if (modal.type === 'water') {
      const suffix = waterLogMode === 'ml' ? '(mL)' : '(Bottles)';
      return `${isModalEditMode ? 'Set water total' : 'Add water'} ${suffix}`;
@@ -2514,14 +2635,19 @@ const modalTitleText = (() => {
    }
   return '';
 })();
-const modalPrimaryBtnText = isModalEditMode ? 'Save' : 'Add';
-const editModeHints = {
-  water: 'Enter the total amount of water you want recorded for today. This replaces any earlier log.',
-  sleep: 'Enter the actual hours slept so the total reflects your day.',
-  electrolyte: 'Pick a mineral and set the number of milligrams that should be saved for today.',
-  workout: 'Remove any sessions logged by mistake, then add the corrected workout if needed.',
-};
-const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
+const modalPrimaryBtnText = isModalEditMode
+  ? modal.type === 'workout'
+    ? 'Done'
+    : 'Save'
+  : 'Add';
+const modalDateLabel = formatDateLabel(modalTargetEntry?.dateKey || modal.dateKey || todayKey);
+const modalEditHint = isModalEditMode
+  ? modal.type === 'workout'
+    ? `Manage workouts logged on ${modalDateLabel}.`
+    : `Updating ${modal.type} totals for ${modalDateLabel}.`
+  : null;
+const selectedDayEntry = dayDetail.visible ? getEntryForDate(dayDetail.dateKey) : null;
+const selectedDayLabel = selectedDayEntry ? formatDateLabel(selectedDayEntry.dateKey) : '';
 
  if (isLoading) {
    return (
@@ -2619,7 +2745,9 @@ const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
           <ScreenTransition routeKey={route}>
             {route === 'home' && <Home />}
             {route === 'analyze' && <Analyze />}
-            {route === 'calendar' && <Calendar history={history} today={today} goals={goals} />}
+            {route === 'calendar' && (
+              <Calendar history={history} today={today} goals={goals} onSelectDay={openDayDetail} />
+            )}
             {route === 'settings' && <Settings />}
           </ScreenTransition>
         </View>
@@ -2657,9 +2785,11 @@ const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
                <Text style={{ color: themeColors.textMuted, marginBottom: 6 }}>
                  Bottle size: {goals.waterBottleMl || 0} mL
                </Text>
-                {isModalEditMode && (
-                  <Text style={styles.modalHint}>Currently logged: {today.waterMl} mL</Text>
-                )}
+               {isModalEditMode && (
+                 <Text style={styles.modalHint}>
+                   Currently logged: {modalTargetEntry?.waterMl || 0} mL
+                 </Text>
+               )}
              </>
            )}
 
@@ -2673,12 +2803,12 @@ const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
            )}
 
 
-           {modal.type === 'workout' && (
-             <>
-               <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
-                 <SegBtn
-                   text="Standard"
-                   active={workoutInputMode === 'standard'}
+          {modal.type === 'workout' && !isModalEditMode && (
+            <>
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
+                <SegBtn
+                  text="Standard"
+                  active={workoutInputMode === 'standard'}
                    onPress={() => setWorkoutInputMode('standard')}
                  />
                  <SegBtn
@@ -2697,12 +2827,12 @@ const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
 
            {modal.type === 'workout' && isModalEditMode && (
              <View style={styles.manageBox}>
-               <Text style={styles.manageHeading}>Logged today</Text>
-               {todaysSessions.length === 0 ? (
+               <Text style={styles.manageHeading}>Logged {modalDateLabel}</Text>
+               {modalWorkoutSessions.length === 0 ? (
                  <Text style={styles.manageEmptyText}>No workouts logged yet.</Text>
                ) : (
                  <ScrollView style={styles.manageList} showsVerticalScrollIndicator={false}>
-                   {todaysSessions.map((session) => (
+                   {modalWorkoutSessions.map((session) => (
                      <View key={session.id} style={styles.manageRow}>
                        <View style={styles.manageCopy}>
                          <Text style={styles.manageLabel}>{describeWorkoutSummary(session)}</Text>
@@ -2711,7 +2841,7 @@ const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
                          </Text>
                        </View>
                        <Pressable
-                         onPress={() => removeWorkoutSession(session.id)}
+                         onPress={() => removeWorkoutSession(session.id, modal.dateKey)}
                          style={styles.manageRemoveBtn}
                          hitSlop={8}
                        >
@@ -2726,7 +2856,11 @@ const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
 
 
            {modal.type === 'workout' ? (
-             workoutInputMode === 'standard' ? <StandardWorkoutForm /> : <WorkoutForm />
+             isModalEditMode
+               ? null
+               : workoutInputMode === 'standard'
+               ? <StandardWorkoutForm />
+               : <WorkoutForm />
            ) : modal.type === 'electrolyte' && electrolyteMode === 'batch' ? (
              <>
                {/* PRESETS ROW */}
@@ -2788,11 +2922,13 @@ const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
                 )}
                 {isModalEditMode && modal.type === 'electrolyte' && electrolyteMode === 'single' && (
                   <Text style={styles.modalHint}>
-                    {`Currently logged for ${electrolyteKey}: ${today?.electrolytes?.[electrolyteKey] || 0} mg`}
+                    {`Currently logged for ${electrolyteKey}: ${modalTargetEntry?.electrolytes?.[electrolyteKey] || 0} mg`}
                   </Text>
                 )}
                 {isModalEditMode && modal.type === 'sleep' && (
-                  <Text style={styles.modalHint}>Currently logged: {today.sleepHr} hr</Text>
+                  <Text style={styles.modalHint}>
+                    Currently logged: {modalTargetEntry?.sleepHr || 0} hr
+                  </Text>
                 )}
                 <View style={styles.inputBox}>
                  <TextInput
@@ -2856,7 +2992,104 @@ const modalEditHint = isModalEditMode ? editModeHints[modal.type] : null;
               <Text style={styles.modalBtnText}>{modalPrimaryBtnText}</Text>
             </Pressable>
           </View>
-         </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={dayDetail.visible}
+          transparent
+          animationType="fade"
+          onRequestClose={closeDayDetail}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={[styles.modalCard, styles.dayDetailCard]}>
+              <Text style={styles.modalTitle}>{selectedDayLabel || 'Selected day'}</Text>
+              <Text style={styles.modalInfoText}>
+                Adjust logs for this date without changing today’s data.
+              </Text>
+              <View style={styles.dayDetailRow}>
+                <View>
+                  <Text style={styles.dayDetailLabel}>Water</Text>
+                  <Text style={styles.dayDetailValue}>{selectedDayEntry?.waterMl || 0} mL</Text>
+                </View>
+                <Pressable
+                  onPress={() =>
+                    handleDayMetricEdit('water', {
+                      initialValue: selectedDayEntry?.waterMl || 0,
+                    })
+                  }
+                  style={styles.dayDetailAction}
+                >
+                  <Text style={styles.dayDetailActionText}>Edit</Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.dayDetailRow}>
+                <View>
+                  <Text style={styles.dayDetailLabel}>Sleep</Text>
+                  <Text style={styles.dayDetailValue}>{selectedDayEntry?.sleepHr || 0} hr</Text>
+                </View>
+                <Pressable
+                  onPress={() =>
+                    handleDayMetricEdit('sleep', {
+                      initialValue: selectedDayEntry?.sleepHr || 0,
+                    })
+                  }
+                  style={styles.dayDetailAction}
+                >
+                  <Text style={styles.dayDetailActionText}>Edit</Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.dayDetailRow}>
+                <View>
+                  <Text style={styles.dayDetailLabel}>Electrolytes</Text>
+                  <Text style={styles.dayDetailValue}>
+                    {hasElectrolyteIntake(selectedDayEntry?.electrolytes || {})
+                      ? 'Logged'
+                      : 'Not logged'}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() =>
+                    handleDayMetricEdit('electrolyte', {
+                      initialKey: 'sodium',
+                      initialValue: selectedDayEntry?.electrolytes?.sodium || 0,
+                    })
+                  }
+                  style={styles.dayDetailAction}
+                >
+                  <Text style={styles.dayDetailActionText}>Edit</Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.dayDetailRow}>
+                <View>
+                  <Text style={styles.dayDetailLabel}>Workouts</Text>
+                  <Text style={styles.dayDetailValue}>
+                    {(selectedDayEntry?.workoutSessions || []).length} logged
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable
+                    onPress={() => handleDayMetricEdit('workout')}
+                    style={styles.dayDetailAction}
+                  >
+                    <Text style={styles.dayDetailActionText}>Manage</Text>
+                  </Pressable>
+                  <Pressable onPress={handleDayWorkoutAdd} style={styles.dayDetailActionSecondary}>
+                    <Text style={styles.dayDetailActionText}>Add</Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              <View style={[styles.modalActions, { marginTop: 16 }]}>
+                <Pressable onPress={closeDayDetail} style={[styles.modalBtn, styles.btnGhost]}>
+                  <Text style={styles.btnGhostText}>Close</Text>
+                </Pressable>
+              </View>
+            </View>
           </View>
         </Modal>
       </SafeAreaView>
@@ -3575,6 +3808,32 @@ const styles = StyleSheet.create({
   },
   modalInfoText: { color: TEXT_MUTED, fontSize: 12, lineHeight: 16 },
   modalHint: { color: TEXT_MUTED, fontSize: 12, marginBottom: 8 },
+  dayDetailCard: { paddingVertical: 18 },
+  dayDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 16,
+    gap: 10,
+  },
+  dayDetailLabel: { color: WHITE, fontSize: 14, fontWeight: '600' },
+  dayDetailValue: { color: TEXT_MUTED, fontSize: 13, marginTop: 2 },
+  dayDetailAction: {
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.4)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  dayDetailActionSecondary: {
+    borderWidth: 1,
+    borderColor: 'rgba(96,165,250,0.7)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(37,99,235,0.15)',
+  },
+  dayDetailActionText: { color: '#bfdbfe', fontWeight: '700', fontSize: 12 },
   modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 12 },
   modalBtn: { backgroundColor: BLUE, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
   modalBtnText: { color: WHITE, fontWeight: '700' },
@@ -3694,6 +3953,11 @@ const lightOverrides = StyleSheet.create({
   modalInfoBox: { backgroundColor: '#f8fafc', borderColor: '#e2e8f0' },
   modalInfoText: { color: '#475569' },
   modalHint: { color: '#475569' },
+  dayDetailLabel: { color: '#0f172a' },
+  dayDetailValue: { color: '#475569' },
+  dayDetailAction: { borderColor: '#cbd5f5' },
+  dayDetailActionSecondary: { borderColor: '#93c5fd', backgroundColor: '#dbeafe' },
+  dayDetailActionText: { color: '#1d4ed8' },
   cardEditBtn: { backgroundColor: '#e2e8f0', borderColor: '#cbd5f5' },
   cardEditText: { color: '#1d4ed8' },
   statusChip: { backgroundColor: '#f1f5f9', borderColor: '#cbd5f5', shadowColor: 'rgba(15,23,42,0.12)' },
