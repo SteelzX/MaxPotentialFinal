@@ -84,10 +84,10 @@ const defaultElectrolytePackets = [];
 const defaultHistory = () => [];
 
 const defaultReminders = {
- water: { enabled: false, time: '09:00' },
- electrolytes: { enabled: false, time: '13:00' },
- sleep: { enabled: false, time: '22:00' },
- workouts: { enabled: false, time: '17:00' },
+ water: { enabled: false, time: '9:00 AM' },
+ electrolytes: { enabled: false, time: '1:00 PM' },
+ sleep: { enabled: false, time: '10:00 PM' },
+ workouts: { enabled: false, time: '5:00 PM' },
 };
 
 const DEFAULT_THEME_COLORS = {
@@ -108,6 +108,61 @@ const ThemeContext = React.createContext({
   styles: {},
   setAppearance: () => {},
 });
+
+const HOME_HERO_GRADIENTS = {
+  dark: ['#2563eb', '#1d4ed8', '#0ea5e9'],
+  light: ['#eff6ff', '#dbeafe', '#bfdbfe'],
+};
+
+const ANALYZE_HERO_GRADIENTS = {
+  dark: ['#312e81', '#1e3a8a', '#0f172a'],
+  light: ['#eef2ff', '#e0e7ff', '#c7d2fe'],
+};
+
+const DETAIL_HERO_GRADIENTS = {
+  dark: {
+    sleep: ['#4c1d95', '#2e1065'],
+    water: ['#0c4a6e', '#082f49'],
+    workouts: ['#7c2d12', '#431407'],
+  },
+  light: {
+    sleep: ['#e9d5ff', '#ddd6fe'],
+    water: ['#bae6fd', '#e0f2fe'],
+    workouts: ['#fed7aa', '#fde68a'],
+  },
+};
+
+const MOMENTUM_CARD_GRADIENTS = {
+  dark: ['#312e81', '#1e1b4b', '#0f172a'],
+  light: ['#fdf2f8', '#e0f2fe', '#eef2ff'],
+};
+
+const METRIC_TILE_PALETTES = {
+  dark: {
+    water: {
+      gradient: ['rgba(14,165,233,0.95)', 'rgba(59,130,246,0.65)'],
+      accent: 'rgba(125,211,252,0.35)',
+    },
+    sleep: {
+      gradient: ['rgba(139,92,246,0.95)', 'rgba(79,70,229,0.7)'],
+      accent: 'rgba(196,181,253,0.45)',
+    },
+    electrolyte: {
+      gradient: ['rgba(34,197,94,0.95)', 'rgba(21,128,61,0.7)'],
+      accent: 'rgba(187,247,208,0.4)',
+    },
+    workout: {
+      gradient: ['rgba(249,115,22,0.95)', 'rgba(185,28,28,0.75)'],
+      accent: 'rgba(254,215,170,0.4)',
+    },
+  },
+  light: {
+    water: { gradient: ['#bae6fd', '#7dd3fc'], accent: 'rgba(14,165,233,0.18)' },
+    sleep: { gradient: ['#e9d5ff', '#c4b5fd'], accent: 'rgba(139,92,246,0.2)' },
+    electrolyte: { gradient: ['#bbf7d0', '#86efac'], accent: 'rgba(34,197,94,0.18)' },
+    workout: { gradient: ['#fed7aa', '#fdba74'], accent: 'rgba(249,115,22,0.22)' },
+  },
+};
 
 function useThemeContext() {
   return React.useContext(ThemeContext);
@@ -136,9 +191,11 @@ const sanitizeReminders = (data) => {
  Object.keys(base).forEach((key) => {
    const item = data[key];
    if (!item) return;
+   const normalizedTime =
+     typeof item.time === 'string' ? normalizeTimeString(item.time) : null;
    base[key] = {
      enabled: !!item.enabled,
-     time: typeof item.time === 'string' ? item.time : base[key].time,
+     time: normalizedTime || base[key].time,
    };
  });
  return base;
@@ -215,6 +272,41 @@ const computeConsistencyStreak = (history = [], today, goals = defaultGoals) => 
   return streak;
 };
 
+const formatTimeLabel = (hour24, minute) => {
+  const suffix = hour24 >= 12 ? 'PM' : 'AM';
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  const minuteStr = String(minute).padStart(2, '0');
+  return `${hour12}:${minuteStr} ${suffix}`;
+};
+
+const parseTimeString = (time) => {
+  if (typeof time !== 'string') return null;
+  const trimmed = time.trim();
+  if (!trimmed) return null;
+  const match = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i.exec(trimmed);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minuteStr = match[2] ?? '00';
+  const minute = Number(minuteStr);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  const suffix = match[3] ? match[3].toLowerCase() : null;
+  if (suffix) {
+    if (hour < 1 || hour > 12) return null;
+    if (suffix === 'pm' && hour < 12) hour += 12;
+    if (suffix === 'am' && hour === 12) hour = 0;
+  } else if (hour > 23) {
+    return null;
+  }
+  if (minute < 0 || minute > 59 || hour < 0 || hour > 23) return null;
+  return { hour, minute };
+};
+
+const normalizeTimeString = (time) => {
+  const parsed = parseTimeString(time);
+  if (!parsed) return null;
+  return formatTimeLabel(parsed.hour, parsed.minute);
+};
+
 const describeNextReminder = (timeString, now = new Date()) => {
   const parsed = parseTimeString(timeString);
   if (!parsed) return null;
@@ -230,8 +322,7 @@ const describeNextReminder = (timeString, now = new Date()) => {
   if (hours > 0) parts.push(`${hours}h`);
   if (minutes > 0) parts.push(`${minutes}m`);
   if (!parts.length) parts.push('<1m');
-  const pad = (n) => String(n).padStart(2, '0');
-  return `Next alert in ${parts.join(' ')} (${pad(parsed.hour)}:${pad(parsed.minute)})`;
+  return `Next alert in ${parts.join(' ')} (${formatTimeLabel(parsed.hour, parsed.minute)})`;
 };
 
 const AnimatedScrollView = Animated.createAnimatedComponent(ScrollView);
@@ -558,7 +649,7 @@ export default function App() {
  );
 
  const handleReminderTimeChange = useCallback((key, value) => {
-   const sanitized = value.replace(/[^0-9:]/g, '').slice(0, 5);
+   const sanitized = value.replace(/[^0-9:apm\s]/gi, '').toUpperCase().slice(0, 8);
    setReminders((prev) => ({
      ...prev,
      [key]: { ...prev[key], time: sanitized },
@@ -566,18 +657,18 @@ export default function App() {
  }, []);
 
  const handleReminderTimeBlur = useCallback((key, value) => {
-   const normalized = normalizeTimeString(value);
+  const normalized = normalizeTimeString(value);
   if (!normalized) {
-    Alert.alert('Invalid time', 'Enter time using 24-hour format, e.g. 07:30 or 18:45.');
+    Alert.alert('Invalid time', 'Enter time like 7:30 AM or 9:15 PM.');
     setReminders((prev) => ({
       ...prev,
       [key]: { ...prev[key], time: defaultReminders[key].time },
     }));
     return;
   }
-   setReminders((prev) => ({
-     ...prev,
-     [key]: { ...prev[key], time: normalized },
+  setReminders((prev) => ({
+    ...prev,
+    [key]: { ...prev[key], time: normalized },
    }));
  }, []);
 
@@ -1547,136 +1638,166 @@ const RevealView = ({ delay = 0, children, travel = 18 }) => {
  /* -------------------- Screens -------------------- */
 
 
- const Home = () => (
-   <AnimatedScrollView
-     style={styles.scroll}
-     contentContainerStyle={styles.scrollContent}
-     showsVerticalScrollIndicator={false}
-   >
-     <RevealView>
-       <LinearGradient
-         colors={['#2563eb', '#1d4ed8', '#0ea5e9']}
-         start={{ x: 0, y: 0 }}
-         end={{ x: 1, y: 1 }}
-         style={styles.hero}
-       >
-         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-           <MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />
-           <Text style={styles.appName}>MaxPot</Text>
-         </View>
-         <Text style={styles.heroText}>Hit your daily targets.</Text>
-       </LinearGradient>
-     </RevealView>
+const Home = () => {
+  const { mode } = useThemeContext();
+  const isLightMode = mode === 'light';
+  const tilePalette = METRIC_TILE_PALETTES[isLightMode ? 'light' : 'dark'];
+  const heroGradient = HOME_HERO_GRADIENTS[isLightMode ? 'light' : 'dark'];
+  const waterRemaining = Math.max(0, (goals.waterMl || 0) - (today.waterMl || 0));
+  const sleepRemaining = Math.max(0, (goals.sleepHr || 0) - (today.sleepHr || 0));
+  const workoutRemaining = Math.max(0, (goals.workout || 0) - todaysSessions.length);
+  const electrolyteLogged = hasElectrolyteIntake(today.electrolytes || {});
+  const readinessMessage =
+    readinessPct >= 80
+      ? 'Prime to push today.'
+      : readinessPct >= 55
+      ? 'Stay steady and keep stacking.'
+      : 'Dial it back and recover intentionally.';
+  const formatHours = (value) => {
+    if (!Number.isFinite(value)) return 0;
+    const rounded = Number(value.toFixed(1));
+    return Number.isInteger(rounded) ? Math.round(rounded) : rounded;
+  };
 
-     <RevealView delay={120}>
-       <View style={styles.quickRow}>
-         <QuickButton
-           color={WATER}
-           icon={<MaterialCommunityIcons name="cup-water" size={22} color="#fff" />}
-           label="Log water"
-           onPress={() => openModal('water')}
-         />
-         <QuickButton
-           color={SLEEP}
-           icon={<MaterialCommunityIcons name="sleep" size={22} color="#fff" />}
-           label="Log sleep"
-           onPress={() => openModal('sleep')}
-         />
-         <QuickButton
-           color={WORKOUT}
-           icon={<MaterialCommunityIcons name="dumbbell" size={22} color="#fff" />}
-           label="Log workout"
-           onPress={() => openModal('workout')}
-         />
-       </View>
-     </RevealView>
+  const metricTiles = [
+    {
+      key: 'water',
+      label: 'Hydration',
+      valueText: `${today.waterMl || 0} mL`,
+      hint: waterRemaining > 0 ? `${Math.max(0, Math.round(waterRemaining))} mL to go` : 'Goal locked in',
+      pct: waterProgressPct,
+      gradient: tilePalette.water.gradient,
+      accent: tilePalette.water.accent,
+      icon: <MaterialCommunityIcons name="cup-water" size={18} color="#fff" />,
+      logLabel: 'Log water',
+      logAction: () => openModal('water'),
+      editAction: () =>
+        openModal('water', {
+          mode: 'edit',
+          initialValue: today.waterMl || 0,
+          dateKey: todayKey,
+        }),
+    },
+    {
+      key: 'sleep',
+      label: 'Sleep',
+      valueText: `${today.sleepHr || 0} hr`,
+      hint: sleepRemaining > 0 ? `${formatHours(sleepRemaining)} hr to go` : 'Recovery hit',
+      pct: sleepProgressPct,
+      gradient: tilePalette.sleep.gradient,
+      accent: tilePalette.sleep.accent,
+      icon: <MaterialCommunityIcons name="sleep" size={18} color="#fff" />,
+      logLabel: 'Log sleep',
+      logAction: () => openModal('sleep'),
+      editAction: () =>
+        openModal('sleep', {
+          mode: 'edit',
+          initialValue: today.sleepHr || 0,
+          dateKey: todayKey,
+        }),
+    },
+    {
+      key: 'electrolyte',
+      label: 'Electrolytes',
+      valueText: `${electrolytePct}% balanced`,
+      hint: electrolyteLogged ? 'Keep minerals steady' : 'Nothing logged yet',
+      pct: electrolyteProgressPct,
+      gradient: tilePalette.electrolyte.gradient,
+      accent: tilePalette.electrolyte.accent,
+      icon: <MaterialCommunityIcons name="lightning-bolt" size={18} color="#fff" />,
+      logLabel: 'Log electrolytes',
+      logAction: () => openModal('electrolyte'),
+      editAction: () =>
+        openModal('electrolyte', {
+          mode: 'edit',
+          initialKey: 'sodium',
+          initialValue: today.electrolytes?.sodium || 0,
+          dateKey: todayKey,
+        }),
+    },
+    {
+      key: 'workout',
+      label: 'Workouts',
+      valueText: `${todaysSessions.length} logged`,
+      hint:
+        workoutRemaining > 0
+          ? `${workoutRemaining} session${workoutRemaining === 1 ? '' : 's'} left`
+          : 'Training locked',
+      pct: workoutProgressPct,
+      gradient: tilePalette.workout.gradient,
+      accent: tilePalette.workout.accent,
+      icon: <MaterialCommunityIcons name="dumbbell" size={18} color="#fff" />,
+      logLabel: 'Log workout',
+      logAction: () => openModal('workout'),
+      editAction: () => openModal('workout', { mode: 'edit', dateKey: todayKey }),
+    },
+  ];
 
-     <RevealView delay={180}>
-       <View style={styles.quickRow}>
-         <QuickButton
-           color={ELECTROLYTE}
-           icon={<MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />}
-           label="Log electrolytes"
-           onPress={() => openModal('electrolyte')}
-         />
-     </View>
-     </RevealView>
+  return (
+    <AnimatedScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.scrollContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <RevealView>
+        <LinearGradient
+          colors={heroGradient}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.hero}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <MaterialCommunityIcons name="lightning-bolt" size={20} color="#fff" />
+            <Text style={styles.appName}>MaxPot</Text>
+          </View>
+          <Text style={styles.heroText}>Hit your daily targets.</Text>
+        </LinearGradient>
+      </RevealView>
 
-    {consistencyStreak > 0 && (
+      <RevealView delay={80}>
+        <MomentumCard
+          readiness={readinessPct}
+          hydration={effectiveHydrationPct}
+          sleep={sleepPct}
+          workouts={workoutPct}
+          message={readinessMessage}
+        />
+      </RevealView>
+
+      {consistencyStreak > 0 && (
+        <RevealView delay={160}>
+          <View style={styles.statusChipRow}>
+            <StatusChip
+              label="Consistency streak"
+              value={`${consistencyStreak} day${consistencyStreak === 1 ? '' : 's'}`}
+              icon={<Ionicons name="flame" size={16} color="#fb923c" />}
+              accent="#fb923c"
+            />
+          </View>
+        </RevealView>
+      )}
+
       <RevealView delay={220}>
-        <View style={styles.statusChipRow}>
-          <StatusChip
-            label="Consistency streak"
-            value={`${consistencyStreak} day${consistencyStreak === 1 ? '' : 's'}`}
-            icon={<Ionicons name="flame" size={16} color="#fb923c" />}
-            accent="#fb923c"
-          />
+        <View style={styles.metricGrid}>
+          {metricTiles.map(({ key, ...tileProps }) => (
+            <MetricTile key={key} {...tileProps} />
+          ))}
         </View>
       </RevealView>
-    )}
-
-     <RevealView delay={260}>
-     <ProgressCard
-       label="Water"
-       valueText={`${today.waterMl} / ${goals.waterMl} mL`}
-       pct={waterProgressPct}
-       color={WATER}
-        onEdit={() =>
-          openModal('water', {
-            mode: 'edit',
-            initialValue: today.waterMl || 0,
-            dateKey: todayKey,
-          })
-        }
-      />
-     </RevealView>
-     <RevealView delay={320}>
-     <ProgressCard
-       label="Electrolytes"
-       valueText={`${electrolytePct}% balance`}
-       pct={electrolyteProgressPct}
-       color={ELECTROLYTE}
-        onEdit={() =>
-          openModal('electrolyte', {
-            mode: 'edit',
-            initialKey: 'sodium',
-            initialValue: today.electrolytes?.sodium || 0,
-            dateKey: todayKey,
-          })
-        }
-      />
-     </RevealView>
-     <RevealView delay={380}>
-     <ProgressCard
-       label="Sleep"
-       valueText={`${today.sleepHr} / ${goals.sleepHr} hr`}
-       pct={sleepProgressPct}
-       color={SLEEP}
-        onEdit={() =>
-          openModal('sleep', {
-            mode: 'edit',
-            initialValue: today.sleepHr || 0,
-            dateKey: todayKey,
-          })
-        }
-      />
-     </RevealView>
-     <RevealView delay={440}>
-      <ProgressCard
-        label="Workouts"
-        valueText={`${todaysSessions.length} / ${goals.workout}`}
-        pct={workoutProgressPct}
-        color={WORKOUT}
-        onEdit={() => openModal('workout', { mode: 'edit', dateKey: todayKey })}
-      />
-     </RevealView>
-   </AnimatedScrollView>
- );
+    </AnimatedScrollView>
+  );
+};
 
 
 const Analyze = () => {
+  const { mode } = useThemeContext();
+  const isLightMode = mode === 'light';
+  const analyzeHeroGradient = ANALYZE_HERO_GRADIENTS[isLightMode ? 'light' : 'dark'];
+  const detailHeroGradients = DETAIL_HERO_GRADIENTS[isLightMode ? 'light' : 'dark'];
+  const heroTextColor = mode === 'light' ? '#0f172a' : WHITE;
   const [view, setView] = useState('overview'); // 'overview' | 'sleep' | 'workouts' | 'water'
   const [period, setPeriod] = useState('week'); // 'week' | 'month' | 'year'
+  const [showWorkoutInfo, setShowWorkoutInfo] = useState(false);
 
   const readinessDisplay = Math.round(analysis?.readiness ?? readinessPct);
   const sleepScoreDisplay = Math.round(analysis?.sleep_score ?? sleepPct);
@@ -1685,13 +1806,19 @@ const Analyze = () => {
   const insightsList = analysis?.insights || [];
   const recommendationsList = analysis?.recommendations || [];
 
+  const analyzeTabs = [
+    { key: 'overview', label: 'Overview', description: 'Readiness mix', icon: 'grid-outline', color: BLUE },
+    { key: 'sleep', label: 'Sleep', description: 'Recovery quality', icon: 'moon-outline', color: SLEEP },
+    { key: 'water', label: 'Hydration', description: 'Fluid + electrolytes', icon: 'water-outline', color: WATER },
+    { key: 'workouts', label: 'Training', description: 'Load + intensity', icon: 'barbell-outline', color: WORKOUT },
+  ];
+
   const series = useMemo(() => {
     const days = period === 'week' ? 7 : period === 'month' ? 30 : 365;
     return history.slice(-days);
   }, [period, history]);
 
-
-   const labels = useMemo(() => makeLabels(series, period), [series, period]);
+  const labels = useMemo(() => makeLabels(series, period), [series, period]);
   const values = useMemo(() => {
     if (view === 'sleep') return series.map((d) => d.sleepHr || 0);
     if (view === 'workouts')
@@ -1703,25 +1830,62 @@ const Analyze = () => {
     return [];
   }, [series, view]);
 
-
-   const insight = useMemo(() => {
-     if (values.length < 14) return null;
-     const last14 = values.slice(-14);
-     const prev = avg(last14.slice(0, 7));
-     const curr = avg(last14.slice(7));
-     const change = prev === 0 ? (curr === 0 ? 0 : 100) : ((curr - prev) / prev) * 100;
-     const metric = view === 'sleep' ? 'sleep' : view === 'workouts' ? 'workouts' : 'hydration';
-     const word = change >= 0 ? 'better' : 'worse';
-     return `${metric[0].toUpperCase()}${metric.slice(1)} is ${Math.abs(
-       Math.round(change)
-     )}% ${word} this week vs last.`;
-   }, [values, view]);
-
+  const insight = useMemo(() => {
+    if (values.length < 14) return null;
+    const last14 = values.slice(-14);
+    const prev = avg(last14.slice(0, 7));
+    const curr = avg(last14.slice(7));
+    const change = prev === 0 ? (curr === 0 ? 0 : 100) : ((curr - prev) / prev) * 100;
+    const metric = view === 'sleep' ? 'sleep' : view === 'workouts' ? 'workouts' : 'hydration';
+    const word = change >= 0 ? 'better' : 'worse';
+    return `${metric[0].toUpperCase()}${metric.slice(1)} is ${Math.abs(
+      Math.round(change)
+    )}% ${word} this week vs last.`;
+  }, [values, view]);
 
   const lineColor = view === 'sleep' ? SLEEP : view === 'workouts' ? WORKOUT : WATER;
   const isSeriesEmpty = series.length === 0;
   const hasWaterEntries = view === 'water' && values.some((v) => (v || 0) > 0);
   const sleepGoal = goals.sleepHr || defaultGoals.sleepHr;
+
+  const overviewTiles = [
+    {
+      key: 'sleep',
+      label: 'Sleep quality',
+      value: `${sleepScoreDisplay}%`,
+      meta: `${today.sleepHr || 0}h logged today`,
+      icon: <Ionicons name="moon" size={16} color="#fff" />,
+      accent: SLEEP,
+    },
+    {
+      key: 'hydration',
+      label: 'Hydration',
+      value: `${hydrationScoreDisplay}%`,
+      meta: `${today.waterMl || 0} mL today`,
+      icon: <Ionicons name="water" size={16} color="#fff" />,
+      accent: WATER,
+    },
+    {
+      key: 'electrolyte',
+      label: 'Electrolytes',
+      value: `${electrolyteScoreDisplay}%`,
+      meta: hasElectrolyteIntake(today.electrolytes) ? 'Logged' : 'Missing today',
+      icon: <Ionicons name="flash" size={16} color="#fff" />,
+      accent: ELECTROLYTE,
+    },
+    {
+      key: 'workouts',
+      label: 'Training load',
+      value: `${workoutPct}%`,
+      meta: `${todaysSessions.length} session${todaysSessions.length === 1 ? '' : 's'} today`,
+      icon: <Ionicons name="barbell" size={16} color="#fff" />,
+      accent: WORKOUT,
+    },
+  ];
+
+  const detailTitle =
+    view === 'sleep' ? 'Sleep quality' : view === 'water' ? 'Hydration volume' : 'Training load';
+
   const sleepRecommendation =
     view === 'sleep' && values.length
       ? (() => {
@@ -1774,155 +1938,296 @@ const Analyze = () => {
       ? 'Log your water first to unlock electrolyte coaching.'
       : null;
 
+  const detailStats = useMemo(() => {
+    if (view === 'overview' || !values.length) {
+      return { avg: '--', best: '--', last: '--' };
+    }
+    const formatValue = (val) => {
+      if (!Number.isFinite(val)) return '--';
+      if (view === 'sleep') return `${Number(val).toFixed(1)}h`;
+      if (view === 'water') return `${Math.round(val)} mL`;
+      return `${Math.round(val)} pts`;
+    };
+    return {
+      avg: formatValue(avg(values)),
+      best: formatValue(Math.max(...values)),
+      last: formatValue(values[values.length - 1]),
+    };
+  }, [values, view]);
 
-   return (
-     <AnimatedScrollView
-       style={styles.scroll}
-       contentContainerStyle={styles.scrollContent}
-       showsVerticalScrollIndicator={false}
-     >
-       {view === 'overview' ? (
-         <>
-           <RevealView>
-             <Text style={styles.screenTitle}>Performance Overview</Text>
-           </RevealView>
-           <RevealView delay={80}>
-             <Bars
-               data={[
-                 { label: 'Sleep', value: sleepScoreDisplay, color: SLEEP },
-                 { label: 'Hydration', value: hydrationScoreDisplay, color: WATER },
-                 { label: 'Electrolytes', value: electrolyteScoreDisplay, color: ELECTROLYTE },
-                 { label: 'Effective Hydration', value: Math.round(effectiveHydrationPct), color: BLUE },
-                 { label: 'Workouts', value: workoutPct, color: WORKOUT },
-               ]}
-             />
-           </RevealView>
-           <RevealView delay={150}>
-             <Donut percent={readinessDisplay} size={140} strokeWidth={14} />
-           </RevealView>
+  const callouts = useMemo(
+    () =>
+      [insight, hydrationRecommendation, hydrationPrompt, sleepRecommendation, workoutRecommendation].filter(
+        Boolean
+      ),
+    [insight, hydrationRecommendation, hydrationPrompt, sleepRecommendation, workoutRecommendation]
+  );
 
-           {analysisLoading && (
-             <RevealView delay={220}>
-               <View style={{ marginTop: 12, alignItems: 'center' }}>
-                 <ActivityIndicator color={BLUE} />
-                 <Text style={styles.loadingText}>Updating insights...</Text>
-               </View>
-             </RevealView>
-           )}
-           {analysisError ? (
-             <RevealView delay={220}>
-               <Text style={styles.analysisErrorText}>{analysisError}</Text>
-             </RevealView>
-           ) : null}
+  const detailUnit = view === 'sleep' ? 'h' : view === 'water' ? 'mL' : '';
+  const periodLabel =
+    period === 'week' ? 'Last 7 days' : period === 'month' ? 'Last 30 days' : 'Past year';
 
-           {insightsList.length > 0 && (
-             <RevealView delay={260}>
-               <View style={styles.analysisCard}>
-                 <Text style={styles.analysisCardTitle}>Insights</Text>
-                 {insightsList.map((item, idx) => (
-                   <View key={`ins-${idx}`} style={styles.analysisItem}>
-                     <Text style={styles.analysisItemCategory}>{item.category.toUpperCase()}</Text>
-                     <Text style={styles.analysisItemText}>{item.message}</Text>
-                   </View>
-                 ))}
-               </View>
-             </RevealView>
-           )}
+  return (
+    <>
+      <AnimatedScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <RevealView>
+          <View style={styles.analyzeIntro}>
+            <Text style={styles.screenTitle}>Insights</Text>
+            <Text style={styles.analyzeSubtitle}>Stay ahead of your trends.</Text>
+          </View>
+        </RevealView>
+      <RevealView delay={40}>
+        <View style={styles.analyzeTopTabs}>
+          {analyzeTabs.map((tab) => {
+            const isActive = view === tab.key;
+            return (
+              <Pressable
+                key={tab.key}
+                onPress={() => setView(tab.key)}
+                style={[
+                  styles.analyzeTopTab,
+                  isActive && styles.analyzeTopTabActive,
+                ]}
+              >
+                <Ionicons
+                  name={tab.icon}
+                  size={14}
+                  color={isActive ? '#0f172a' : '#cbd5f5'}
+                />
+                <Text
+                  style={[
+                    styles.analyzeTopTabText,
+                    isActive && styles.analyzeTopTabTextActive,
+                    tab.key === 'water' && styles.analyzeTopTabTextSmall,
+                  ]}
+                >
+                  {tab.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </RevealView>
 
-           {recommendationsList.length > 0 && (
-             <RevealView delay={320}>
-               <View style={styles.analysisCard}>
-                 <Text style={styles.analysisCardTitle}>Suggested Actions</Text>
-                 {recommendationsList.map((item, idx) => (
-                   <View key={`rec-${idx}`} style={styles.analysisItem}>
-                     <Text style={styles.analysisItemCategory}>{item.category.toUpperCase()}</Text>
-                     <Text style={styles.analysisItemText}>{item.message}</Text>
-                   </View>
-                 ))}
-               </View>
-             </RevealView>
-           )}
+      {view === 'overview' ? (
+        <>
+          <RevealView delay={80}>
+            <LinearGradient
+              colors={analyzeHeroGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.analyzeHero}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.momentumLabel}>Overall readiness</Text>
+                <Text style={[styles.analyzeHeroTitle, { color: heroTextColor }]}>
+                  Daily composite
+                </Text>
+                <Text style={styles.analyzeHeroSubtitle}>Updated after each log</Text>
+                <View style={styles.analyzeHeroStats}>
+                  <View>
+                    <Text style={[styles.analyzeHeroValue, { color: heroTextColor }]}>
+                      {readinessDisplay}%
+                    </Text>
+                    <Text style={styles.analyzeHeroMeta}>Today</Text>
+                  </View>
+                  <View>
+                    <Text style={[styles.analyzeHeroValue, { color: heroTextColor }]}>
+                      {Math.round(effectiveHydrationPct)}%
+                    </Text>
+                    <Text style={styles.analyzeHeroMeta}>Effective hydration</Text>
+                  </View>
+                </View>
+              </View>
+              <Donut percent={readinessDisplay} size={140} strokeWidth={14} />
+            </LinearGradient>
+          </RevealView>
 
+          <RevealView delay={140}>
+            <View style={styles.scoreGrid}>
+              {overviewTiles.map(({ key, ...tileProps }) => (
+                <ScoreTile key={key} {...tileProps} />
+              ))}
+            </View>
+          </RevealView>
 
-           <RevealView delay={360}>
-             <View style={styles.switchRow}>
-               <SwitchPill text="Sleep" onPress={() => setView('sleep')} />
-               <SwitchPill text="Workouts" onPress={() => setView('workouts')} />
-               <SwitchPill text="Water" onPress={() => setView('water')} />
-             </View>
-           </RevealView>
-         </>
-       ) : (
-         <>
-           <RevealView>
-             <View style={styles.rowBetween}>
-               <Text style={styles.screenTitle}>
-                 {view === 'sleep' ? 'Sleep' : view === 'workouts' ? 'Workouts' : 'Water'}
-               </Text>
-               <View style={styles.periodRow}>
-                 <PeriodBtn text="Week" on={() => setPeriod('week')} active={period === 'week'} />
-                 <PeriodBtn text="Month" on={() => setPeriod('month')} active={period === 'month'} />
-                 <PeriodBtn text="Year" on={() => setPeriod('year')} active={period === 'year'} />
-               </View>
-             </View>
-           </RevealView>
+          {analysisLoading && (
+            <RevealView delay={180}>
+              <View style={styles.analysisLoadingRow}>
+                <ActivityIndicator color={BLUE} />
+                <Text style={styles.loadingText}>Updating insights...</Text>
+              </View>
+            </RevealView>
+          )}
+          {analysisError ? (
+            <RevealView delay={200}>
+              <Text style={styles.analysisErrorText}>{analysisError}</Text>
+            </RevealView>
+          ) : null}
 
-
-           <RevealView delay={120}>
-             <LineChartView
-               labels={labels}
-               values={values}
-               unit={view === 'sleep' ? 'h' : view === 'water' ? 'mL' : ''}
-               color={lineColor}
-             />
-           </RevealView>
-
-           {isSeriesEmpty ? (
-             <RevealView delay={180}>
-               <Text style={styles.emptyStateText}>Log your first {view} entry to unlock trends.</Text>
-             </RevealView>
-           ) : (
-             <>
-               {insight && (
-                 <RevealView delay={200}>
-                   <Text style={styles.insight}>{insight}</Text>
-                 </RevealView>
-               )}
-
-              {hydrationRecommendation && (
-                <RevealView delay={240}>
-                  <Text style={styles.insight}>{hydrationRecommendation}</Text>
-                </RevealView>
-              )}
-              {hydrationPrompt && (
-                <RevealView delay={240}>
-                  <Text style={styles.insight}>{hydrationPrompt}</Text>
-                </RevealView>
-              )}
-              {sleepRecommendation && (
-                <RevealView delay={260}>
-                  <Text style={styles.insight}>{sleepRecommendation}</Text>
-                </RevealView>
-              )}
-              {workoutRecommendation && (
-                <RevealView delay={260}>
-                  <Text style={styles.insight}>{workoutRecommendation}</Text>
-                </RevealView>
-              )}
-            </>
+          {insightsList.length > 0 && (
+            <RevealView delay={220}>
+              <View style={styles.calloutCard}>
+                <Text style={styles.calloutHeading}>Insights</Text>
+                {insightsList.map((item, idx) => (
+                  <View key={`ins-${idx}`} style={styles.calloutRow}>
+                    <Ionicons name="sparkles-outline" size={14} color="#93c5fd" />
+                    <Text style={styles.calloutText}>
+                      <Text style={styles.calloutCategory}>{item.category.toUpperCase()}</Text>{' '}
+                      {item.message}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </RevealView>
           )}
 
+          {recommendationsList.length > 0 && (
+            <RevealView delay={260}>
+              <View style={styles.calloutCard}>
+                <Text style={styles.calloutHeading}>Suggested actions</Text>
+                {recommendationsList.map((item, idx) => (
+                  <View key={`rec-${idx}`} style={styles.calloutRow}>
+                    <Ionicons name="checkmark-circle-outline" size={14} color="#34d399" />
+                    <Text style={styles.calloutText}>
+                      <Text style={styles.calloutCategory}>{item.category.toUpperCase()}</Text>{' '}
+                      {item.message}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </RevealView>
+          )}
+        </>
+      ) : (
+        <>
+          <RevealView delay={80}>
+            <LinearGradient
+              colors={
+                view === 'sleep'
+                  ? detailHeroGradients.sleep
+                  : view === 'water'
+                  ? detailHeroGradients.water
+                  : detailHeroGradients.workouts
+              }
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.detailHeroCard}
+            >
+              <View style={styles.detailHeroHeader}>
+                <View>
+                  <Text style={styles.momentumLabel}>Focus metric</Text>
+                  <Text style={styles.detailHeroTitle}>{detailTitle}</Text>
+                </View>
+                {view === 'workouts' && (
+                  <Pressable
+                    hitSlop={12}
+                    onPress={() => setShowWorkoutInfo(true)}
+                    style={styles.infoButton}
+                  >
+                    <Ionicons
+                      name="information-circle-outline"
+                      size={20}
+                      color={mode === 'light' ? '#0f172a' : '#fefce8'}
+                    />
+                  </Pressable>
+                )}
+              </View>
+              <View style={styles.detailStatsRow}>
+                <View>
+                  <Text style={styles.detailStatLabel}>Average</Text>
+                  <Text style={styles.detailStatValue}>{detailStats.avg}</Text>
+                </View>
+                <View>
+                  <Text style={styles.detailStatLabel}>Best</Text>
+                  <Text style={styles.detailStatValue}>{detailStats.best}</Text>
+                </View>
+                <View>
+                  <Text style={styles.detailStatLabel}>Latest</Text>
+                  <Text style={styles.detailStatValue}>{detailStats.last}</Text>
+                </View>
+              </View>
+            </LinearGradient>
+          </RevealView>
 
-           <RevealView delay={320}>
-             <TouchableOpacity onPress={() => setView('overview')} style={styles.backBtn}>
-               <Text style={styles.backText}>Back to Overview</Text>
-             </TouchableOpacity>
-           </RevealView>
-         </>
-       )}
-     </AnimatedScrollView>
-   );
- };
+          <RevealView delay={140}>
+            <View style={styles.trendCard}>
+              <View style={styles.trendCardHeader}>
+                <View style={styles.trendHeaderText}>
+                  <Text style={styles.cardTitle}>{detailTitle} trend</Text>
+                  <Text style={styles.trendMeta}>{periodLabel}</Text>
+                </View>
+                <View style={styles.periodRow}>
+                  <PeriodBtn text="Week" on={() => setPeriod('week')} active={period === 'week'} />
+                  <PeriodBtn text="Month" on={() => setPeriod('month')} active={period === 'month'} />
+                  <PeriodBtn text="Year" on={() => setPeriod('year')} active={period === 'year'} />
+                </View>
+              </View>
+
+              <LineChartView labels={labels} values={values} unit={detailUnit} color={lineColor} />
+
+              {isSeriesEmpty && (
+                <Text style={styles.emptyStateText}>
+                  Log your first {view} entry to unlock trends.
+                </Text>
+              )}
+            </View>
+          </RevealView>
+
+          {!isSeriesEmpty && callouts.length > 0 && (
+            <RevealView delay={200}>
+              <View style={styles.calloutCard}>
+                <Text style={styles.calloutHeading}>Coaching</Text>
+                {callouts.map((text, idx) => (
+                  <View key={`callout-${idx}`} style={styles.calloutRow}>
+                    <Ionicons name="pulse-outline" size={14} color="#93c5fd" />
+                    <Text style={styles.calloutText}>{text}</Text>
+                  </View>
+                ))}
+              </View>
+            </RevealView>
+          )}
+
+          <RevealView delay={260}>
+            <TouchableOpacity onPress={() => setView('overview')} style={styles.backBtn}>
+              <Text style={styles.backText}>Back to Overview</Text>
+            </TouchableOpacity>
+          </RevealView>
+        </>
+      )}
+      </AnimatedScrollView>
+
+      <Modal
+        visible={showWorkoutInfo}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setShowWorkoutInfo(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, styles.workoutInfoCard]}>
+            <Text style={styles.modalTitle}>Training load points</Text>
+            <Text style={styles.modalInfoText}>
+              {`We convert every logged workout into load points:\n\n• Base load = session RPE × minutes logged.\n• Strength sets add an intensity bonus when you record reps and RIR/failure work.\n• Daily load is the sum of all session points.\n• The trend compares the last 7/30/365 days so you can spot spikes or dips.`}
+            </Text>
+            <View style={styles.modalActions}>
+              <Pressable
+                onPress={() => setShowWorkoutInfo(false)}
+                style={[styles.modalBtn, styles.btnGhost]}
+              >
+                <Text style={styles.btnGhostText}>Got it</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+};
+
 
 
  const Settings = () => {
@@ -1972,11 +2277,11 @@ const Analyze = () => {
             value={config.time}
             onChangeText={(text) => handleReminderTimeChange(reminderKey, text)}
             onBlur={() => handleReminderTimeBlur(reminderKey, config.time)}
-            keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
-            placeholder="HH:MM"
+            keyboardType="default"
+            placeholder="7:30 AM"
             placeholderTextColor="#6b7280"
             style={styles.reminderTimeInput}
-            maxLength={5}
+            maxLength={8}
           />
         </View>
         <Switch
@@ -2046,85 +2351,89 @@ const Analyze = () => {
       contentContainerStyle={styles.scrollContent}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.screenTitle}>Settings</Text>
+      <RevealView>
+        <View>
+          <Text style={styles.screenTitle}>Settings</Text>
+          <Text style={styles.settingsSubtitle}>Tune your plan and reminders.</Text>
+        </View>
+      </RevealView>
 
+      <RevealView delay={60}>
+        <View style={styles.settingsCard}>
+          <Text style={styles.cardTitle}>Daily targets</Text>
+          <Text style={styles.settingsHint}>Adjust water, sleep, and training goals.</Text>
+          <GoalInput
+            label="Daily water (mL)"
+            value={String(localGoals.waterMl)}
+            onChange={(v) => setLocalGoals((g) => ({ ...g, waterMl: Number(v) || 0 }))}
+          />
+          <GoalInput
+            label="Water bottle size (mL)"
+            value={String(localGoals.waterBottleMl)}
+            onChange={(v) => setLocalGoals((g) => ({ ...g, waterBottleMl: Number(v) || 0 }))}
+          />
+          <GoalInput
+            label="Daily sleep (hr)"
+            value={String(localGoals.sleepHr)}
+            onChange={(v) => setLocalGoals((g) => ({ ...g, sleepHr: Number(v) || 0 }))}
+          />
+          <GoalInput
+            label="Daily workouts"
+            value={String(localGoals.workout)}
+            onChange={(v) => setLocalGoals((g) => ({ ...g, workout: Number(v) || 0 }))}
+          />
+          <Pressable onPress={saveGoals} style={styles.saveBtn}>
+            <Text style={styles.saveBtnText}>Save targets</Text>
+          </Pressable>
+        </View>
+      </RevealView>
 
-       {/* Goals & bottle size */}
-       <GoalInput
-         label="Daily water (mL)"
-         value={String(localGoals.waterMl)}
-         onChange={(v) => setLocalGoals((g) => ({ ...g, waterMl: Number(v) || 0 }))}
-       />
-       <GoalInput
-         label="Water bottle size (mL)"
-         value={String(localGoals.waterBottleMl)}
-         onChange={(v) => setLocalGoals((g) => ({ ...g, waterBottleMl: Number(v) || 0 }))}
-       />
-       <GoalInput
-         label="Daily sleep (hr)"
-         value={String(localGoals.sleepHr)}
-         onChange={(v) => setLocalGoals((g) => ({ ...g, sleepHr: Number(v) || 0 }))}
-       />
-       <GoalInput
-         label="Daily workouts"
-         value={String(localGoals.workout)}
-         onChange={(v) => setLocalGoals((g) => ({ ...g, workout: Number(v) || 0 }))}
-       />
+      <RevealView delay={120}>
+        <View style={[styles.settingsCard, styles.themeCard]}>
+          <Text style={styles.cardTitle}>Appearance</Text>
+          <Text style={styles.settingsHint}>Switch between dark and light mode.</Text>
+          <View style={styles.themeOptionsRow}>
+            <Pressable
+              onPress={() => setAppearance('dark')}
+              style={[styles.themeOption, appearance === 'dark' && styles.themeOptionActive]}
+            >
+              <View style={styles.rowBetween}>
+                <Text style={styles.themeOptionLabel}>Dark</Text>
+                {appearance === 'dark' && <Ionicons name="checkmark-circle" size={18} color={BLUE} />}
+              </View>
+              <Text style={styles.themeOptionHint}>High contrast for low-light sessions.</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setAppearance('light')}
+              style={[styles.themeOption, appearance === 'light' && styles.themeOptionActive]}
+            >
+              <View style={styles.rowBetween}>
+                <Text style={styles.themeOptionLabel}>Light</Text>
+                {appearance === 'light' && <Ionicons name="checkmark-circle" size={18} color={BLUE} />}
+              </View>
+              <Text style={styles.themeOptionHint}>Bright palette for daytime tracking.</Text>
+            </Pressable>
+          </View>
+        </View>
+      </RevealView>
 
+      <RevealView delay={180}>
+        <View style={styles.settingsCard}>
+          <Text style={styles.cardTitle}>Daily reminders</Text>
+          <Text style={styles.settingsHint}>Set AM/PM times for your nudges.</Text>
+          {Object.keys(reminderLabels).map((key) => (
+            <ReminderRow key={key} reminderKey={key} />
+          ))}
+        </View>
+      </RevealView>
 
-       <Pressable onPress={saveGoals} style={styles.saveBtn}>
-         <Text style={styles.saveBtnText}>Save settings</Text>
-       </Pressable>
-
-       <View style={[styles.card, styles.themeCard]}>
-         <Text style={styles.cardTitle}>Appearance</Text>
-         <Text style={styles.reminderNote}>Switch between dark and light mode.</Text>
-         <View style={styles.themeOptionsRow}>
-           <Pressable
-             onPress={() => setAppearance('dark')}
-             style={[styles.themeOption, appearance === 'dark' && styles.themeOptionActive]}
-           >
-             <View style={styles.rowBetween}>
-               <Text style={styles.themeOptionLabel}>Dark</Text>
-               {appearance === 'dark' && <Ionicons name="checkmark-circle" size={18} color={BLUE} />}
-             </View>
-             <Text style={styles.themeOptionHint}>High contrast for low-light sessions.</Text>
-           </Pressable>
-           <Pressable
-             onPress={() => setAppearance('light')}
-             style={[styles.themeOption, appearance === 'light' && styles.themeOptionActive]}
-           >
-             <View style={styles.rowBetween}>
-               <Text style={styles.themeOptionLabel}>Light</Text>
-               {appearance === 'light' && <Ionicons name="checkmark-circle" size={18} color={BLUE} />}
-             </View>
-             <Text style={styles.themeOptionHint}>Bright palette for daytime tracking.</Text>
-           </Pressable>
-         </View>
-       </View>
-
-       <View style={{ height: 1, backgroundColor: themeColors.divider, marginVertical: 16, opacity: 0.6 }} />
-
-       <View style={styles.card}>
-         <Text style={styles.cardTitle}>Daily reminders</Text>
-         <Text style={styles.reminderNote}>Set 24-hour times for your nudges.</Text>
-         {Object.keys(reminderLabels).map((key) => (
-           <ReminderRow key={key} reminderKey={key} />
-         ))}
-       </View>
-
-
-       {/* Divider */}
-       <View style={{ height: 1, backgroundColor: themeColors.divider, marginVertical: 16, opacity: 0.6 }} />
-
-
-       {/* Electrolyte packet profiles */}
-       <Text style={styles.screenTitle}>Electrolyte Packets</Text>
-       <View style={styles.card}>
-         <Text style={styles.cardTitle}>Create packet</Text>
-         <View style={{ marginTop: 10 }}>
-           <Text style={styles.inputLabel}>Packet name</Text>
-           <View style={styles.inputBox}>
+      <RevealView delay={240}>
+        <View style={styles.settingsCard}>
+          <Text style={styles.cardTitle}>Electrolyte packets</Text>
+          <Text style={styles.settingsHint}>Save mineral presets for faster logging.</Text>
+          <View style={{ marginTop: 10 }}>
+            <Text style={styles.inputLabel}>Packet name</Text>
+            <View style={styles.inputBox}>
              <TextInput
                value={pktName}
                onChangeText={setPktName}
@@ -2150,15 +2459,16 @@ const Analyze = () => {
          <Pressable onPress={addPacket} style={[styles.saveBtn, { marginTop: 8 }]}>
            <Text style={styles.saveBtnText}>Save packet</Text>
          </Pressable>
-       </View>
+        </View>
+      </RevealView>
 
 
-       {electrolytePackets.length > 0 && (
-         <View style={[styles.card, { marginTop: 12 }]}>
-           <Text style={styles.cardTitle}>Saved packets</Text>
-           {electrolytePackets.map((p) => (
-             <View key={p.id} style={styles.packetRow}>
-               <View style={{ flex: 1 }}>
+      {electrolytePackets.length > 0 && (
+        <View style={[styles.settingsCard, { marginTop: 12 }]}>
+          <Text style={styles.cardTitle}>Saved packets</Text>
+          {electrolytePackets.map((p) => (
+            <View key={p.id} style={styles.packetRow}>
+              <View style={{ flex: 1 }}>
                  <Text style={{ color: themeColors.textPrimary, fontWeight: '700' }}>{p.name}</Text>
                  <Text style={{ color: themeColors.textMuted, fontSize: 12 }}>
                    Na {p.sodium || 0} • K {p.potassium || 0} • Cl {p.chloride || 0} • Mg {p.magnesium || 0} • Ca {p.calcium || 0} • PO₄ {p.phosphate || 0} • HCO₃ {p.bicarbonate || 0}
@@ -2169,12 +2479,14 @@ const Analyze = () => {
                </Pressable>
              </View>
            ))}
-         </View>
-       )}
+        </View>
+      )}
 
-      <Pressable onPress={handleSignOut} style={styles.signOutBtn}>
-        <Text style={styles.signOutText}>Sign out</Text>
-      </Pressable>
+      <RevealView delay={300}>
+        <Pressable onPress={handleSignOut} style={styles.signOutBtn}>
+          <Text style={styles.signOutText}>Sign out</Text>
+        </Pressable>
+      </RevealView>
     </ScrollView>
   );
 };
@@ -2315,25 +2627,6 @@ const updateSet = (i, effort) => {
    copy[i] = { ...copy[i], effort };
    return copy;
  });
-};
-
-const parseTimeString = (time) => {
- if (typeof time !== 'string') return null;
- const trimmed = time.trim();
- const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
- if (!match) return null;
- const hour = Number(match[1]);
- const minute = Number(match[2]);
- if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
- if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
- return { hour, minute };
-};
-
-const normalizeTimeString = (time) => {
- const parsed = parseTimeString(time);
- if (!parsed) return null;
- const pad = (n) => String(n).padStart(2, '0');
- return `${pad(parsed.hour)}:${pad(parsed.minute)}`;
 };
 
 
@@ -3128,7 +3421,9 @@ const Bars = ({ data }) => {
 
 const LineChartView = ({ labels = [], values = [], unit, color = BLUE }) => {
  const { styles } = useThemeContext();
- const width = Dimensions.get('window').width - 32;
+ const [graphWidth, setGraphWidth] = useState(
+   () => Dimensions.get('window').width - 48
+ );
  const height = 200;
  const pad = 16;
  const hasValues = Array.isArray(values) && values.length > 0;
@@ -3140,19 +3435,28 @@ const LineChartView = ({ labels = [], values = [], unit, color = BLUE }) => {
  const safeLabels =
    hasValues && labels.length ? labels : Array.from({ length: data.length }, () => '');
 
+ const effectiveWidth = Math.max(graphWidth, pad * 2 + 1);
  const min = Math.min(...data, 0);
  const max = Math.max(...data, 1);
  const range = max - min || 1;
 
  const pts = data.map((v, i) => {
-   const x = pad + (i * (width - pad * 2)) / Math.max(1, data.length - 1);
+   const x = pad + (i * (effectiveWidth - pad * 2)) / Math.max(1, data.length - 1);
    const y = pad + (height - pad * 2) * (1 - (v - min) / range);
    return { x, y };
  });
 
  return (
    <View style={[styles.card, { padding: 12 }]}>
-     <View style={{ height, width: '100%' }}>
+     <View
+       style={{ height, width: '100%' }}
+       onLayout={({ nativeEvent }) => {
+         const nextWidth = nativeEvent.layout.width;
+         if (Math.abs(nextWidth - graphWidth) > 0.5) {
+           setGraphWidth(nextWidth);
+         }
+       }}
+     >
        <View style={[styles.gridLine, { top: pad }]} />
        <View style={[styles.gridLine, { top: height / 2 }]} />
        <View style={[styles.gridLine, { bottom: pad }]} />
@@ -3216,12 +3520,13 @@ const LineChartView = ({ labels = [], values = [], unit, color = BLUE }) => {
 
 /* -------------------- Donut progress (no libs) -------------------- */
 const Donut = ({ percent = 0, size = 120, strokeWidth = 12 }) => {
- const { colors } = useThemeContext();
+ const { colors, mode } = useThemeContext();
  const bounded = Math.max(0, Math.min(100, percent));
  const half = size / 2;
  const progress = useRef(new Animated.Value(0)).current;
  const listenerRef = useRef(null);
  const [displayPct, setDisplayPct] = useState(0);
+ const trackColor = mode === 'light' ? '#e2e8f0' : '#111827';
 
  useEffect(() => {
    progress.stopAnimation();
@@ -3280,7 +3585,7 @@ const Donut = ({ percent = 0, size = 120, strokeWidth = 12 }) => {
            borderRadius: half,
            backgroundColor: 'transparent',
            borderWidth: strokeWidth,
-           borderColor: '#111827',
+           borderColor: trackColor,
          }}
        />
        {/* right half */}
@@ -3466,8 +3771,18 @@ const styles = StyleSheet.create({
    borderColor: '#374151',
  },
  errorBannerText: { color: '#fca5a5', textAlign: 'center', fontSize: 13, fontWeight: '600' },
- scroll: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24 },
- scrollContent: { paddingBottom: 90, paddingTop: 4 },
+scroll: { flex: 1, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24 },
+scrollContent: { paddingBottom: 90, paddingTop: 4 },
+settingsSubtitle: { color: '#94a3b8', marginTop: 4 },
+settingsCard: {
+  backgroundColor: 'rgba(12,18,32,0.88)',
+  borderWidth: 1,
+  borderColor: 'rgba(148,163,184,0.15)',
+  borderRadius: 20,
+  padding: 16,
+  marginTop: 18,
+},
+settingsHint: { color: '#94a3b8', fontSize: 13, marginBottom: 12 },
 
 
  hero: {
@@ -3486,29 +3801,234 @@ const styles = StyleSheet.create({
  },
  appName: { color: '#e0f2fe', fontSize: 18, fontWeight: '800', letterSpacing: 0.3 },
  heroText: { color: WHITE, fontSize: 20, marginTop: 10, fontWeight: '600' },
-
-
- quickRow: { flexDirection: 'row', gap: 12, marginBottom: 14 },
- quickBtn: {
-   flex: 1,
-   paddingVertical: 14,
-   borderRadius: 16,
-   alignItems: 'center',
-   justifyContent: 'center',
-   gap: 6,
-   borderWidth: 1,
-   borderColor: 'rgba(255,255,255,0.1)',
-   shadowColor: '#020617',
-   shadowOpacity: 0.3,
-   shadowRadius: 16,
-   shadowOffset: { width: 0, height: 10 },
-   elevation: 6,
- },
- quickText: { color: WHITE, fontWeight: '800', letterSpacing: 0.2 },
- statusChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 12 },
- statusChip: {
+ momentumCard: {
    flexDirection: 'row',
    alignItems: 'center',
+   borderRadius: 28,
+   padding: 18,
+   borderWidth: 1,
+   borderColor: 'rgba(191,219,254,0.25)',
+   shadowColor: '#312e81',
+   shadowOpacity: 0.35,
+   shadowRadius: 28,
+   shadowOffset: { width: 0, height: 18 },
+   marginBottom: 16,
+ },
+ momentumLabel: { color: '#c7d2fe', fontSize: 12, letterSpacing: 1, textTransform: 'uppercase' },
+ momentumHeading: { color: WHITE, fontSize: 24, fontWeight: '800', marginTop: 2 },
+ momentumSub: { color: '#e0e7ff', marginTop: 4, fontSize: 14 },
+ momentumMeta: { color: '#c7d2fe', fontWeight: '700', marginTop: 8 },
+ momentumBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+ momentumBadge: {
+   borderRadius: 999,
+   paddingVertical: 6,
+   paddingHorizontal: 12,
+   backgroundColor: 'rgba(15,23,42,0.35)',
+   borderWidth: 1,
+   borderColor: 'rgba(148,163,184,0.25)',
+ },
+ momentumBadgeLabel: { color: '#cbd5f5', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 },
+ momentumBadgeValue: { color: WHITE, fontWeight: '800', fontSize: 14 },
+momentumGauge: { width: 140, alignItems: 'center', justifyContent: 'center' },
+analyzeIntro: { marginTop: 10, marginBottom: 12 },
+analyzeSubtitle: { color: '#94a3b8', marginTop: 4 },
+analyzeTopTabs: { flexDirection: 'row', gap: 10, marginBottom: 18 },
+analyzeTopTab: {
+  flex: 1,
+  borderRadius: 16,
+  borderWidth: 1,
+  borderColor: 'rgba(148,163,184,0.25)',
+  backgroundColor: 'rgba(15,23,42,0.5)',
+  paddingVertical: 10,
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexDirection: 'row',
+  gap: 6,
+},
+analyzeTopTabActive: { backgroundColor: '#bfdbfe', borderColor: '#bfdbfe' },
+analyzeTopTabText: { color: '#cbd5f5', fontWeight: '700', fontSize: 13 },
+analyzeTopTabTextActive: { color: '#0f172a' },
+analyzeTopTabTextSmall: { fontSize: 12 },
+analyzeHero: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  borderRadius: 28,
+  padding: 20,
+  borderWidth: 1,
+  borderColor: 'rgba(191,219,254,0.3)',
+  marginBottom: 18,
+},
+analyzeHeroTitle: { color: WHITE, fontSize: 24, fontWeight: '800', marginTop: 6 },
+analyzeHeroSubtitle: { color: '#cbd5f5', marginTop: 2 },
+analyzeHeroStats: { flexDirection: 'row', gap: 22, marginTop: 14 },
+analyzeHeroValue: { color: WHITE, fontSize: 24, fontWeight: '800' },
+analyzeHeroMeta: { color: '#cbd5f5', fontSize: 12, marginTop: 2 },
+statusChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 12 },
+metricGrid: {
+  flexDirection: 'row',
+  flexWrap: 'wrap',
+  justifyContent: 'space-between',
+  gap: 14,
+},
+  metricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  metricTile: {
+    width: '48%',
+    borderRadius: 28,
+    padding: 18,
+    minHeight: 160,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(12,18,32,0.88)',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
+  },
+  metricTileWave: {
+    position: 'absolute',
+    width: '140%',
+    height: 140,
+    bottom: -60,
+    left: -20,
+    opacity: 0.45,
+    borderRadius: 80,
+  },
+  metricTileHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  metricTileIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(15,23,42,0.28)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metricTilePct: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: 'rgba(226,232,240,0.45)',
+    backgroundColor: 'rgba(15,23,42,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metricTileHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  metricTileEdit: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: 'rgba(248,250,252,0.4)',
+    backgroundColor: 'rgba(15,23,42,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metricTilePctText: { color: WHITE, fontWeight: '800', fontSize: 16 },
+  metricTileLabel: { color: '#cbd5f5', fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, marginTop: 12 },
+  metricTileValue: { color: WHITE, fontSize: 22, fontWeight: '800', marginTop: 6 },
+  metricTileHint: { color: '#e0f2fe', fontSize: 13, marginTop: 4 },
+  metricTileCta: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(248,250,252,0.5)',
+    backgroundColor: 'rgba(15,23,42,0.45)',
+  },
+  metricTileCtaText: { color: WHITE, fontWeight: '700' },
+  scoreGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 14,
+    marginBottom: 18,
+  },
+  scoreTile: {
+    width: '48%',
+    borderRadius: 24,
+    padding: 16,
+    backgroundColor: 'rgba(12,18,32,0.88)',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.15)',
+  },
+  scoreTileIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  scoreTileLabel: { color: '#cbd5f5', fontSize: 12, textTransform: 'uppercase', letterSpacing: 1 },
+  scoreTileValue: { color: WHITE, fontSize: 22, fontWeight: '800', marginTop: 8 },
+  scoreTileMeta: { color: '#cbd5f5', fontSize: 12, marginTop: 4 },
+  analysisLoadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginVertical: 10 },
+  calloutCard: {
+    backgroundColor: 'rgba(12,18,32,0.88)',
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
+    marginTop: 14,
+  },
+  calloutHeading: { color: WHITE, fontSize: 16, fontWeight: '700', marginBottom: 10 },
+  calloutRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 10 },
+  calloutText: { color: '#cbd5f5', flex: 1 },
+  calloutCategory: { color: '#93c5fd', fontWeight: '700' },
+  detailHeroCard: {
+    borderRadius: 28,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.3)',
+    marginBottom: 18,
+  },
+  detailHeroHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  detailHeroTitle: { color: WHITE, fontSize: 22, fontWeight: '800', marginTop: 4 },
+  detailStatsRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 14 },
+  detailStatLabel: { color: '#cbd5f5', fontSize: 12, textTransform: 'uppercase', letterSpacing: 1 },
+  detailStatValue: { color: WHITE, fontSize: 18, fontWeight: '800', marginTop: 6 },
+  infoButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(254,240,138,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15,23,42,0.35)',
+  },
+  trendCard: {
+    backgroundColor: 'rgba(12,18,32,0.88)',
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.18)',
+  },
+  trendCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  trendHeaderText: { flexShrink: 1 },
+  trendMeta: { color: '#94a3b8', fontSize: 12, marginTop: 4 },
+  statusChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
    borderWidth: 1,
    borderColor: 'rgba(147,197,253,0.35)',
    borderRadius: 14,
@@ -3697,7 +4217,7 @@ const styles = StyleSheet.create({
 
 
  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
- periodRow: { flexDirection: 'row', gap: 8 },
+ periodRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' },
  periodBtn: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, backgroundColor: '#0b0f1a', borderWidth: 1, borderColor: BORDER },
  periodBtnActive: { backgroundColor: '#132239', borderColor: BLUE },
  periodText: { color: '#9ca3af', fontSize: 12, fontWeight: '700' },
@@ -3783,9 +4303,9 @@ const styles = StyleSheet.create({
 
 
  modalBackdrop: { flex: 1, backgroundColor: 'rgba(3,7,18,0.78)', alignItems: 'center', justifyContent: 'center', padding: 16 },
- modalCard: {
-   width: '100%',
-   backgroundColor: 'rgba(10,14,26,0.96)',
+  modalCard: {
+    width: '100%',
+    backgroundColor: 'rgba(10,14,26,0.96)',
    borderRadius: 20,
    borderWidth: 1,
    borderColor: 'rgba(148,163,184,0.16)',
@@ -3808,6 +4328,7 @@ const styles = StyleSheet.create({
   },
   modalInfoText: { color: TEXT_MUTED, fontSize: 12, lineHeight: 16 },
   modalHint: { color: TEXT_MUTED, fontSize: 12, marginBottom: 8 },
+  workoutInfoCard: { maxWidth: 420 },
   dayDetailCard: { paddingVertical: 18 },
   dayDetailRow: {
     flexDirection: 'row',
@@ -3940,7 +4461,51 @@ const lightOverrides = StyleSheet.create({
   hero: { borderColor: 'rgba(148,163,184,0.45)', shadowColor: 'rgba(15,23,42,0.15)' },
   appName: { color: '#0f172a' },
   heroText: { color: '#0f172a' },
-  quickBtn: { borderColor: 'rgba(15,23,42,0.08)', shadowColor: 'rgba(15,23,42,0.15)' },
+  analyzeSubtitle: { color: '#475569' },
+  analyzeTopTab: { backgroundColor: '#f8fafc', borderColor: '#e2e8f0' },
+  analyzeTopTabActive: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
+  analyzeTopTabText: { color: '#475569' },
+  analyzeTopTabTextActive: { color: '#f8fafc' },
+  analyzeTopTabTextSmall: { fontSize: 12 },
+  analyzeHero: { borderColor: '#e2e8f0' },
+  analyzeHeroSubtitle: { color: '#475569' },
+  analyzeHeroMeta: { color: '#475569' },
+  settingsSubtitle: { color: '#475569' },
+  settingsCard: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  settingsHint: { color: '#475569' },
+  momentumCard: { borderColor: '#cbd5f5' },
+  momentumLabel: { color: '#475569' },
+  momentumHeading: { color: '#0f172a' },
+  momentumSub: { color: '#475569' },
+  momentumMeta: { color: '#1d4ed8' },
+  momentumBadge: { backgroundColor: '#e2e8f0', borderColor: '#cbd5f5' },
+  momentumBadgeLabel: { color: '#475569' },
+  momentumBadgeValue: { color: '#0f172a' },
+  metricTile: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  metricTileIcon: { backgroundColor: 'rgba(15,23,42,0.08)' },
+  metricTilePct: { borderColor: '#cbd5f5', backgroundColor: 'rgba(248,250,252,0.85)' },
+  metricTilePctText: { color: '#0f172a' },
+  metricTileLabel: { color: '#475569' },
+  metricTileValue: { color: '#0f172a' },
+  metricTileHint: { color: '#475569' },
+  metricTileEdit: { borderColor: '#cbd5f5', backgroundColor: '#e2e8f0' },
+  metricTileCta: { borderColor: '#cbd5f5', backgroundColor: '#e0f2fe' },
+  metricTileCtaText: { color: '#0f172a' },
+  scoreTile: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  scoreTileLabel: { color: '#475569' },
+  scoreTileValue: { color: '#0f172a' },
+  scoreTileMeta: { color: '#475569' },
+  calloutCard: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  calloutHeading: { color: '#0f172a' },
+  calloutText: { color: '#475569' },
+  calloutCategory: { color: '#1d4ed8' },
+  detailHeroCard: { borderColor: '#e2e8f0' },
+  detailHeroTitle: { color: '#0f172a' },
+  infoButton: { backgroundColor: '#f8fafc', borderColor: '#cbd5f5' },
+  detailStatLabel: { color: '#475569' },
+  detailStatValue: { color: '#0f172a' },
+  trendCard: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
+  trendMeta: { color: '#64748b' },
   analysisCard: { backgroundColor: '#ffffff', borderColor: '#e2e8f0' },
   analysisCardTitle: { color: '#0f172a' },
   analysisItemCategory: { color: '#475569' },
@@ -4061,47 +4626,6 @@ function mergeStyles(base, overrides) {
 /* -------- small UI bits -------- */
 
 
-const QuickButton = ({ label, onPress, color, icon }) => {
- const { styles } = useThemeContext();
- const scale = useRef(new Animated.Value(1)).current;
-
- const handlePressIn = () => {
-   Animated.spring(scale, {
-     toValue: 0.95,
-     useNativeDriver: true,
-     speed: 20,
-     bounciness: 6,
-   }).start();
- };
-
- const handlePressOut = () => {
-   Animated.spring(scale, {
-     toValue: 1,
-     useNativeDriver: true,
-     speed: 20,
-     bounciness: 6,
-   }).start();
- };
-
- return (
-   <Animated.View style={{ flex: 1, transform: [{ scale }] }}>
-     <Pressable
-       onPress={onPress}
-       onPressIn={handlePressIn}
-       onPressOut={handlePressOut}
-       style={({ pressed }) => [
-         styles.quickBtn,
-         { backgroundColor: color, opacity: pressed ? 0.88 : 1 },
-       ]}
-     >
-       {icon}
-       <Text style={styles.quickText}>{label}</Text>
-     </Pressable>
-   </Animated.View>
- );
-};
-
-
 const StatusChip = ({ label, value, icon, accent = BLUE }) => {
   const { styles } = useThemeContext();
   const accentBg =
@@ -4118,61 +4642,155 @@ const StatusChip = ({ label, value, icon, accent = BLUE }) => {
 };
 
 
-const ProgressCard = ({ label, valueText, pct, color, onEdit }) => {
- const { styles } = useThemeContext();
- const bounded = Math.max(0, Math.min(100, pct));
- const progress = useRef(new Animated.Value(bounded)).current;
- const pulse = useRef(new Animated.Value(1)).current;
+const MomentumCard = ({ readiness, hydration, sleep, workouts, message }) => {
+  const { styles, mode } = useThemeContext();
+  const gradientColors = MOMENTUM_CARD_GRADIENTS[mode === 'light' ? 'light' : 'dark'];
+  const clampStat = (value) =>
+    Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 0;
+  const stats = [
+    { label: 'Hydration', value: `${clampStat(hydration)}%` },
+    { label: 'Sleep', value: `${clampStat(sleep)}%` },
+    { label: 'Training', value: `${clampStat(workouts)}%` },
+  ];
+  const readinessLabel = clampStat(readiness);
+  const readinessHeading =
+    readinessLabel >= 80 ? 'Overdrive' : readinessLabel >= 55 ? 'Momentum' : 'Reset';
+  return (
+    <LinearGradient
+      colors={gradientColors}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.momentumCard}
+    >
+      <View style={{ flex: 1 }}>
+        <Text style={styles.momentumLabel}>Today</Text>
+        <Text style={styles.momentumHeading}>{readinessHeading}</Text>
+        <Text style={styles.momentumSub}>{message || 'Stay consistent today.'}</Text>
+        <Text style={styles.momentumMeta}>{`Readiness ${readinessLabel}%`}</Text>
+        <View style={styles.momentumBadgeRow}>
+          {stats.map((stat) => (
+            <View key={stat.label} style={styles.momentumBadge}>
+              <Text style={styles.momentumBadgeLabel}>{stat.label}</Text>
+              <Text style={styles.momentumBadgeValue}>{stat.value}</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+      <View style={styles.momentumGauge}>
+        <Donut percent={readinessLabel} size={110} strokeWidth={12} />
+      </View>
+    </LinearGradient>
+  );
+};
 
- useEffect(() => {
-   Animated.timing(progress, {
-     toValue: bounded,
-     duration: 480,
-     easing: Easing.out(Easing.cubic),
-     useNativeDriver: false,
-  }).start();
- }, [bounded, progress]);
 
- useEffect(() => {
-   pulse.setValue(0);
-   Animated.timing(pulse, {
-     toValue: 1,
-     duration: 380,
-     easing: Easing.out(Easing.cubic),
-     useNativeDriver: true,
-   }).start();
- }, [bounded, pulse, valueText]);
+const MetricTile = ({
+  label,
+  valueText,
+  pct,
+  hint,
+  gradient,
+  accent,
+  icon,
+  logLabel = 'Log entry',
+  logAction,
+  editAction,
+}) => {
+  const { styles, colors } = useThemeContext();
+  const wave = useRef(new Animated.Value(0)).current;
+  const pctValue = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));
 
- const width = progress.interpolate({
-   inputRange: [0, 100],
-   outputRange: ['0%', '100%'],
- });
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(wave, {
+        toValue: 1,
+        duration: 6000,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [wave]);
 
- const translateY = pulse.interpolate({
-   inputRange: [0, 1],
-   outputRange: [10, 0],
- });
+  const translateX = wave.interpolate({ inputRange: [0, 1], outputRange: [0, -60] });
+  const opacity = wave.interpolate({ inputRange: [0, 1], outputRange: [0.35, 0.65] });
 
- return (
-   <Animated.View style={[styles.card, { opacity: pulse, transform: [{ translateY }] }]}>
-     <View style={styles.cardHeader}>
-       <Text style={styles.cardTitle}>{label}</Text>
-       <View style={styles.cardHeaderRight}>
-         <Text style={styles.cardValue}>{valueText}</Text>
-         {onEdit ? (
-           <Pressable onPress={onEdit} style={styles.cardEditBtn} hitSlop={8}>
-             <Ionicons name="create-outline" size={14} color="#93c5fd" />
-             <Text style={styles.cardEditText}>Edit</Text>
-           </Pressable>
-         ) : null}
-       </View>
-     </View>
-     <View style={styles.progressTrack}>
-       <Animated.View style={[styles.progressFill, { width, backgroundColor: color }]} />
-     </View>
-     <Text style={styles.progressCaption}>{bounded}% of goal</Text>
-   </Animated.View>
- );
+  const handleLogPress = useCallback(() => {
+    if (typeof logAction === 'function') logAction();
+  }, [logAction]);
+
+  const handleEditPress = useCallback(() => {
+    if (typeof editAction === 'function') editAction();
+  }, [editAction]);
+
+  return (
+    <View style={styles.metricTile}>
+      <LinearGradient
+        colors={gradient}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.metricTileWave,
+          { backgroundColor: accent, opacity, transform: [{ translateX }, { rotate: '12deg' }] },
+        ]}
+      />
+      <View style={styles.metricTileHeader}>
+        <View style={styles.metricTileIcon}>{icon}</View>
+        <View style={styles.metricTileHeaderRight}>
+          {editAction ? (
+            <TouchableOpacity
+              onPress={handleEditPress}
+              style={styles.metricTileEdit}
+              activeOpacity={0.85}
+            >
+              <Ionicons
+                name="create-outline"
+                size={14}
+                color={colors?.tabIconActive || '#bfdbfe'}
+              />
+            </TouchableOpacity>
+          ) : null}
+          <View style={styles.metricTilePct}>
+            <Text style={styles.metricTilePctText}>{Math.round(pctValue)}%</Text>
+          </View>
+        </View>
+      </View>
+      <Text style={styles.metricTileLabel}>{label}</Text>
+      <Text style={styles.metricTileValue}>{valueText}</Text>
+      {hint ? <Text style={styles.metricTileHint}>{hint}</Text> : null}
+      <TouchableOpacity
+        onPress={handleLogPress}
+        style={styles.metricTileCta}
+        activeOpacity={0.88}
+        disabled={!logAction}
+      >
+        <Ionicons
+          name="add-circle-outline"
+          size={16}
+          color={colors?.textPrimary ? `${colors.textPrimary}` : '#e0f2fe'}
+        />
+        <Text style={styles.metricTileCtaText}>{logLabel}</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
+
+const ScoreTile = ({ label, value, meta, icon, accent = BLUE }) => {
+  const { styles } = useThemeContext();
+  return (
+    <View style={styles.scoreTile}>
+      <View style={[styles.scoreTileIcon, { backgroundColor: accent }]}>{icon}</View>
+      <Text style={styles.scoreTileLabel}>{label}</Text>
+      <Text style={styles.scoreTileValue}>{value}</Text>
+      <Text style={styles.scoreTileMeta}>{meta}</Text>
+    </View>
+  );
 };
 
 
